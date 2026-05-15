@@ -15,6 +15,7 @@ class Block:
     kind: str
     text: str = ""
     level: int = 0
+    number: int = 0
     rows: list[list[str]] = field(default_factory=list)
     caption: str = ""
 
@@ -236,7 +237,7 @@ def parse_figure(content: str, context: ParseContext) -> Block:
         context.labels[label] = str(context.figure_count)
     caption = normalize_text(extract_braced_command(content, "caption") or "", context)
     text = f"[Figure {context.figure_count} omitted]"
-    return Block("figure", text=text, caption=caption)
+    return Block("figure", text=text, number=context.figure_count, caption=caption)
 
 
 def parse_table(content: str, context: ParseContext) -> Block:
@@ -247,7 +248,7 @@ def parse_table(content: str, context: ParseContext) -> Block:
     caption = normalize_text(extract_braced_command(content, "caption") or "", context)
     tabular = extract_environment(content, "tabular")
     rows = parse_tabular(tabular or "", context)
-    return Block("table", caption=caption, rows=rows)
+    return Block("table", number=context.table_count, caption=caption, rows=rows)
 
 
 def parse_tabular(content: str, context: ParseContext) -> list[list[str]]:
@@ -577,7 +578,7 @@ def write_docx(blocks: Iterable[Block], metadata: Metadata, path: Path) -> None:
             paragraph = document.add_paragraph(block.text)
             paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
             if block.caption:
-                add_formatted_paragraph(document, f"Caption: {block.caption}")
+                add_formatted_paragraph(document, f"Figure {block.number}: {block.caption}")
         elif block.kind == "table":
             add_docx_table(document, block)
     document.save(path)
@@ -587,7 +588,7 @@ def add_docx_table(document: Document, block: Block) -> None:
     rows = block.rows
     if not rows:
         if block.caption:
-            document.add_paragraph(f"Table: {block.caption}")
+            add_formatted_paragraph(document, f"Table {block.number}: {block.caption}")
         return
     column_count = max(len(row) for row in rows)
     table = document.add_table(rows=len(rows), cols=column_count)
@@ -596,7 +597,7 @@ def add_docx_table(document: Document, block: Block) -> None:
         for col_index in range(column_count):
             table.cell(row_index, col_index).text = row[col_index] if col_index < len(row) else ""
     if block.caption:
-        add_formatted_paragraph(document, f"Caption: {block.caption}")
+        add_formatted_paragraph(document, f"Table {block.number}: {block.caption}")
 
 
 def add_formatted_paragraph(document: Document, text: str):
@@ -642,11 +643,11 @@ def render_markdown(blocks: Iterable[Block], metadata: Metadata) -> str:
         elif block.kind == "figure":
             lines.extend([block.text, ""])
             if block.caption:
-                lines.extend([f"Caption: {block.caption}", ""])
+                lines.extend([f"Figure {block.number}: {block.caption}", ""])
         elif block.kind == "table":
             lines.extend(render_markdown_table(block.rows))
             if block.caption:
-                lines.extend(["", f"Caption: {block.caption}", ""])
+                lines.extend(["", f"Table {block.number}: {block.caption}", ""])
     return "\n".join(lines).rstrip() + "\n"
 
 

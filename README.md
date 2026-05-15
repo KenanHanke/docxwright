@@ -4,7 +4,9 @@
 requiring external tools such as Pandoc. It is intentionally pragmatic: it walks
 included subfiles, keeps tables, replaces figures with placeholders and captions,
 normalizes common LaTeX text/math to Unicode, emits author-year citation text
-from Better-BibTeX-style keys, and omits the bibliography.
+from Better-BibTeX-style keys, and omits the bibliography. It's available on
+[PyPI](https://pypi.org/project/docxwright/) and can be installed using
+`pip install docxwright`
 
 ```bash
 docxwright paper-example/main.tex -o paper-example/out/main.docx

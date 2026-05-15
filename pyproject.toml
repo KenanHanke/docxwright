@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "docxwright"
-version = "0.1.0"
+version = "1.0.1"
 description = "A pragmatic LaTeX-to-DOCX converter for editable scientific manuscripts."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -18,3 +18,7 @@ docxwright = "docxwright.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["docxwright*"]
+
+[project.urls]
+Homepage = "https://github.com/KenanHanke/docxwright"
+Issues = "https://github.com/KenanHanke/docxwright/issues"
