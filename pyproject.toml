@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,12 +8,10 @@ version = "0.1.0"
 description = "A pragmatic LaTeX-to-DOCX converter for editable scientific manuscripts."
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = [
-    "python-docx>=1.1.0",
-]
-authors = [
-    { name = "Kenan Hanke" },
-]
+dependencies = ["python-docx>=1.1.0"]
+authors = [{ name = "Kenan Hanke" }]
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE", "THIRD_PARTY_LICENSES/*"]
 
 [project.scripts]
 docxwright = "docxwright.cli:main"

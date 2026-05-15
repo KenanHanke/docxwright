@@ -9,14 +9,15 @@ from .converter import convert_file
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="docxwright",
-        description="Convert a LaTeX .tex manuscript to an editable .docx file.",
+        description="Convert a LaTeX .tex manuscript to an editable .docx file.\n" \
+                    "Source: github.com/KenanHanke/docxwright",
     )
-    parser.add_argument("tex_file", type=Path, help="Path to the main .tex file.")
-    parser.add_argument("-o", "--output", type=Path, required=True, help="Output .docx path.")
+    parser.add_argument("tex_file", type=Path, help="path to the main .tex file")
+    parser.add_argument("-o", "--output", type=Path, required=True, help="output .docx path")
     parser.add_argument(
         "--markdown",
         type=Path,
-        help="Optional Markdown-like intermediate output for inspection.",
+        help="optional Markdown-like intermediate output",
     )
     return parser
 
