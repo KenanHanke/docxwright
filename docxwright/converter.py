@@ -1,663 +1,1475 @@
+"""LaTeX manuscript -> intermediate document model -> DOCX."""
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import date
 from pathlib import Path
 import re
-from typing import Iterable
+import unicodedata
+import warnings
 
-from docx import Document
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.shared import Pt
+from . import texmath
+from .bibliography import BibConfig, Bibliography, config_from_preamble
+from .model import (
+    Break,
+    Cell,
+    Equation,
+    Figure,
+    Heading,
+    ListBlock,
+    Math,
+    PageBreak,
+    Paragraph,
+    Style,
+    Table,
+    TableOfContents,
+    Text,
+)
+from .tex import (
+    BGROUP,
+    EGROUP,
+    Macro,
+    Tok,
+    TokenStream,
+    detokenize,
+    expand_macro,
+    flatten_tex,
+    group_text,
+    parse_macro_definitions,
+    tokenize,
+)
+
+MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August",
+          "September", "October", "November", "December"]
+
+TEXT_SYMBOLS = {
+    "%": "%", "&": "&", "#": "#", "_": "_", "$": "$", "{": "{", "}": "}", " ": " ",
+    "textbackslash": "\\", "ldots": "…", "dots": "…", "textellipsis": "…",
+    "textendash": "–", "textemdash": "—", "textquoteleft": "‘", "textquoteright": "’",
+    "textquotedblleft": "“", "textquotedblright": "”", "textbullet": "•", "textdegree": "°",
+    "textregistered": "®", "texttrademark": "™", "textcopyright": "©", "copyright": "©",
+    "S": "§", "P": "¶", "dag": "†", "ddag": "‡", "textdagger": "†", "textdaggerdbl": "‡",
+    "LaTeX": "LaTeX", "TeX": "TeX", "LaTeXe": "LaTeX2ε", "slash": "/", "textasciitilde": "~",
+    "textasciicircum": "^", "textless": "<", "textgreater": ">", "textbar": "|",
+    "textperiodcentered": "·", "textmu": "µ", "textpm": "±", "texttimes": "×",
+    "o": "ø", "O": "Ø", "ss": "ß", "ae": "æ", "AE": "Æ", "oe": "œ", "OE": "Œ", "aa": "å",
+    "AA": "Å", "l": "ł", "L": "Ł", "i": "ı", "j": "ȷ", "euro": "€", "texteuro": "€",
+    "pounds": "£", "textsterling": "£", "checkmark": "✓", "textsection": "§",
+    "guillemotleft": "«", "guillemotright": "»", "textquotesingle": "'",
+}
+SPACING = {",": "\u00a0", ";": "\u00a0", ":": "\u00a0", ">": "\u00a0", "enspace": "\u2002",
+           "quad": "\u2003", "qquad": "\u2003\u2003", "thinspace": "\u00a0", "nobreakspace": "\u00a0"}
+ACCENTS = {"'": "\u0301", "`": "\u0300", "^": "\u0302", '"': "\u0308", "~": "\u0303",
+           "=": "\u0304", ".": "\u0307", "u": "\u0306", "v": "\u030c", "H": "\u030b",
+           "c": "\u0327", "d": "\u0323", "b": "\u0331", "r": "\u030a", "k": "\u0328", "t": "\u0361"}
+SECTION_LEVELS = {"part": 0, "chapter": 0, "section": 1, "subsection": 2, "subsubsection": 3,
+                  "paragraph": 4, "subparagraph": 5}
+SIZES = {"tiny": "tiny", "scriptsize": "scriptsize", "footnotesize": "footnotesize", "small": "small",
+         "normalsize": "normal", "large": "large", "Large": "Large", "LARGE": "LARGE",
+         "huge": "huge", "Huge": "Huge"}
+STYLE_COMMANDS = {
+    "textbf": {"bold": True}, "textit": {"italic": True}, "textsl": {"italic": True},
+    "texttt": {"mono": True}, "textsc": {"smallcaps": True}, "textup": {"italic": False},
+    "textmd": {"bold": False}, "textrm": {"mono": False}, "textsf": {"mono": False},
+    "textnormal": {"bold": False, "italic": False, "mono": False, "smallcaps": False},
+    "textsuperscript": {"vert": "super"}, "textsubscript": {"vert": "sub"},
+    "mkbibbold": {"bold": True}, "mkbibitalic": {"italic": True},
+}
+STYLE_DECLARATIONS = {
+    "bfseries": {"bold": True}, "itshape": {"italic": True}, "slshape": {"italic": True},
+    "ttfamily": {"mono": True}, "scshape": {"smallcaps": True}, "upshape": {"italic": False},
+    "mdseries": {"bold": False}, "rmfamily": {"mono": False}, "sffamily": {"mono": False},
+    "normalfont": {"bold": False, "italic": False, "mono": False, "smallcaps": False},
+    "bf": {"bold": True}, "it": {"italic": True}, "sl": {"italic": True}, "tt": {"mono": True},
+    "sc": {"smallcaps": True}, "rm": {"mono": False, "bold": False, "italic": False},
+}
+# Commands whose arguments are dropped entirely: name -> (optional args, mandatory args).
+SKIP_ARGS = {
+    "vspace": (0, 1), "hspace": (0, 1), "setlength": (0, 2), "addtolength": (0, 2),
+    "setcounter": (0, 2), "addtocounter": (0, 2), "stepcounter": (0, 1), "refstepcounter": (0, 1),
+    "pagestyle": (0, 1), "thispagestyle": (0, 1), "pagenumbering": (0, 1), "hyphenation": (0, 1),
+    "bibliographystyle": (0, 1), "addbibresource": (1, 1), "graphicspath": (0, 1),
+    "usepackage": (1, 1), "RequirePackage": (1, 1), "documentclass": (1, 1), "color": (1, 1),
+    "definecolor": (0, 3), "captionsetup": (1, 1), "fontsize": (0, 2), "linespread": (0, 1),
+    "enlargethispage": (0, 1), "vskip": (0, 0), "addvspace": (0, 1), "phantom": (0, 1),
+    "hphantom": (0, 1), "vphantom": (0, 1), "newlength": (0, 1), "settowidth": (0, 2),
+    "numberwithin": (0, 2), "DeclareMathOperator": (0, 2), "newtheorem": (1, 2),
+    "AtEveryBibitem": (0, 1), "AtEveryCitekey": (0, 1), "renewbibmacro": (0, 2),
+    "newbibmacro": (0, 2), "DeclareFieldFormat": (1, 2), "pgfplotsset": (0, 1),
+    "usetikzlibrary": (0, 1), "usepgfplotslibrary": (0, 1), "tikzset": (0, 1),
+    "hypersetup": (0, 1), "geometry": (0, 1), "urlstyle": (0, 1), "include": (0, 1),
+    "includeonly": (0, 1), "input": (0, 1), "subfile": (0, 1), "pdfbookmark": (1, 2),
+    "markboth": (0, 2), "markright": (0, 1), "ExecuteBibliographyOptions": (1, 1),
+}
+IGNORED = {
+    "relax", "protect", "cprotect", "makeatletter", "makeatother", "begingroup", "endgroup",
+    "nobreak", "allowbreak", "sloppy", "fussy", "selectfont", "hfill", "vfill", "hfil", "vfil",
+    "null", "smallskip", "medskip", "bigskip", "noindent", "indent", "centering", "raggedright",
+    "raggedleft", "strut", "unskip", "ignorespaces", "leavevmode", "frenchspacing",
+    "nonfrenchspacing", "onecolumn", "twocolumn", "clearfield", "normalsize", "footnotesize",
+    "@", "/", "-", "maketitle", "noalign", "hline", "toprule", "midrule", "bottomrule",
+    "appendix", "mainmatter", "frontmatter", "backmatter", "FloatBarrier", "sffamily",
+    "linebreak", "nolinebreak", "item", "par", "newline", "tableofcontents", "listoffigures",
+    "listoftables", "printbibliography", "hbox", "mbox", "space", "xspace",
+}
+ASSIGNMENTS = {"hangindent", "hangafter", "parindent", "parskip", "emergencystretch", "hfuzz",
+               "vfuzz", "tabcolsep", "arraystretch", "baselineskip", "tolerance", "pretolerance",
+               "hbadness", "vbadness", "linewidth", "textwidth", "columnsep", "leftskip",
+               "rightskip", "abovedisplayskip", "belowdisplayskip", "widowpenalty",
+               "clubpenalty", "looseness", "doublehyphendemerits", "finalhyphendemerits"}
 
 
 @dataclass
-class Block:
-    kind: str
-    text: str = ""
-    level: int = 0
-    number: int = 0
-    rows: list[list[str]] = field(default_factory=list)
-    caption: str = ""
+class State:
+    style: Style = field(default_factory=Style)
+    align: str = "justify"
+    size: str = "normal"
+    hanging: bool = False
 
 
 @dataclass
 class Metadata:
-    title: str = ""
-    authors: list[str] = field(default_factory=list)
-    date: str = ""
+    title: list[Tok] | None = None
+    author: list[Tok] | None = None
+    date: list[Tok] | None = None
 
 
 @dataclass
-class ParseContext:
-    figure_count: int = 0
-    table_count: int = 0
-    labels: dict[str, str] = field(default_factory=dict)
+class Document:
+    blocks: list
+    headings: list
 
 
-GREEK = {
-    "alpha": "α",
-    "beta": "β",
-    "gamma": "γ",
-    "delta": "δ",
-    "epsilon": "ε",
-    "varepsilon": "ε",
-    "zeta": "ζ",
-    "eta": "η",
-    "theta": "θ",
-    "vartheta": "ϑ",
-    "iota": "ι",
-    "kappa": "κ",
-    "lambda": "λ",
-    "mu": "μ",
-    "nu": "ν",
-    "xi": "ξ",
-    "pi": "π",
-    "rho": "ρ",
-    "sigma": "σ",
-    "tau": "τ",
-    "upsilon": "υ",
-    "phi": "φ",
-    "varphi": "φ",
-    "chi": "χ",
-    "psi": "ψ",
-    "omega": "ω",
-    "Gamma": "Γ",
-    "Delta": "Δ",
-    "Theta": "Θ",
-    "Lambda": "Λ",
-    "Xi": "Ξ",
-    "Pi": "Π",
-    "Sigma": "Σ",
-    "Phi": "Φ",
-    "Psi": "Ψ",
-    "Omega": "Ω",
-}
+class ConversionContext:
+    """State shared by all walkers during one conversion pass."""
 
-SYMBOLS = {
-    "times": "×",
-    "cdot": "·",
-    "pm": "±",
-    "le": "≤",
-    "leq": "≤",
-    "ge": "≥",
-    "geq": "≥",
-    "neq": "≠",
-    "ne": "≠",
-    "approx": "≈",
-    "sim": "∼",
-    "in": "∈",
-    "notin": "∉",
-    "exists": "∃",
-    "forall": "∀",
-    "bigvee": "∨",
-    "bigcup": "⋃",
-    "cup": "∪",
-    "cap": "∩",
-    "infty": "∞",
-    "sum": "∑",
-    "sqrt": "√",
-    "ln": "ln",
-    "bar": "¯",
-    "textcopyright": "©",
-    "copyright": "©",
-    "textregistered": "®",
-    "texttrademark": "™",
-    "degree": "°",
-    "circ": "°",
-    "qquad": "  ",
-    "quad": " ",
-}
+    def __init__(self, macros: dict[str, Macro], bibliography: Bibliography | None, labels: dict[str, str]):
+        self.macros = macros
+        self.bibliography = bibliography
+        self.labels = labels  # from the previous pass
+        self.new_labels: dict[str, str] = {}
+        self.counters = {"part": 0, "section": 0, "subsection": 0, "subsubsection": 0, "figure": 0,
+                         "table": 0, "equation": 0}
+        self.appendix = False
+        self.current_label = ""
+        self.metadata = Metadata()
+        self.warned: set[str] = set()
+        self.final_pass = False
 
-SUPERSCRIPT = str.maketrans("0123456789+-=()n", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ⁿ")
-SUBSCRIPT_MAP = {
-    **dict(zip("0123456789+-=()", "₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎")),
-    **dict(zip("aehijklmnoprstuvxy", "ₐₑₕᵢⱼₖₗₘₙₒₚᵣₛₜᵤᵥₓᵧ")),
-}
+    def warn(self, message: str) -> None:
+        if self.final_pass and message not in self.warned:
+            self.warned.add(message)
+            warnings.warn(message, stacklevel=3)
 
 
-def convert_file(tex_path: Path, docx_path: Path, markdown_path: Path | None = None) -> None:
-    tex_path = tex_path.resolve()
-    docx_path = docx_path.resolve()
-    source = flatten_tex(tex_path)
-    metadata = extract_metadata(source)
-    body = extract_document_body(source)
-    context = ParseContext(labels=collect_label_map(body))
-    blocks = parse_blocks(body, tex_path.parent, context)
-    docx_path.parent.mkdir(parents=True, exist_ok=True)
-    write_docx(blocks, metadata, docx_path)
-    if markdown_path:
-        markdown_path = markdown_path.resolve()
-        markdown_path.parent.mkdir(parents=True, exist_ok=True)
-        markdown_path.write_text(render_markdown(blocks, metadata), encoding="utf-8")
+class Walker:
+    """Walks LaTeX tokens TeX-style, producing blocks of the document model."""
 
+    def __init__(self, ctx: ConversionContext, inline_only: bool = False, state: State | None = None):
+        self.ctx = ctx
+        self.inline_only = inline_only
+        self.blocks: list = []
+        self.stack: list[State] = [state or State()]
+        self.para: list = []
+        self.para_indent = False
+        self.para_space_before = 0.0
+        self.indent_next = False
+        self.noindent = False
+        self.list_stack: list[ListBlock] = []
+        self.env_stack: list[str] = []
+        self.after_display = False
 
-def flatten_tex(path: Path, seen: set[Path] | None = None) -> str:
-    seen = seen or set()
-    path = path.resolve()
-    if path in seen:
-        return ""
-    seen.add(path)
-    text = path.read_text(encoding="utf-8")
+    # ------------------------------------------------------------------ state helpers
 
-    def replace_include(match: re.Match[str]) -> str:
-        command, target = match.group(1), match.group(2)
-        candidate = (path.parent / target)
-        if candidate.suffix != ".tex":
-            candidate = candidate.with_suffix(".tex")
-        if command == "input" and not candidate.exists():
-            return f"\n[Figure content omitted: {target}]\n"
-        if candidate.exists():
-            return flatten_tex(candidate, seen)
-        return ""
+    @property
+    def state(self) -> State:
+        return self.stack[-1]
 
-    return re.sub(r"\\(subfile|input)\s*\{([^{}]+)\}", replace_include, text)
+    def push(self) -> None:
+        self.stack.append(replace(self.state))
 
+    def pop(self) -> None:
+        if len(self.stack) > 1:
+            self.stack.pop()
 
-def extract_metadata(source: str) -> Metadata:
-    title = normalize_text(extract_braced_command(source, "title") or "")
-    author_text = extract_braced_command(source, "author") or ""
-    authors = [normalize_text(part).strip() for part in re.split(r"\\and", author_text) if part.strip()]
-    date = extract_braced_command(source, "date") or ""
-    if r"\today" in date:
-        date = ""
-    return Metadata(title=title, authors=authors, date=normalize_text(date))
+    def set_style(self, **changes) -> None:
+        self.state.style = replace(self.state.style, **changes)
 
+    # ------------------------------------------------------------------ output helpers
 
-def extract_document_body(source: str) -> str:
-    match = re.search(r"\\begin\{document\}(.*)\\end\{document\}", source, flags=re.S)
-    return match.group(1) if match else source
-
-
-def parse_blocks(text: str, base_dir: Path, context: ParseContext) -> list[Block]:
-    text = strip_comments(text)
-    text = remove_bibliography(text)
-    text = remove_wrappers(text)
-    text = re.sub(r"\\maketitle|\\tableofcontents", "\n", text)
-    blocks: list[Block] = []
-    pos = 0
-    env_pattern = re.compile(r"\\begin\{(abstract|figure|table|equation|align|cases)\}(?:\[[^]]*\])?", re.S)
-    for match in env_pattern.finditer(text):
-        if match.start() < pos:
-            continue
-        blocks.extend(parse_plain(text[pos : match.start()], context))
-        env = match.group(1)
-        content_start = match.end()
-        end_match = find_environment_end(text, env, content_start)
-        if not end_match:
-            pos = content_start
-            continue
-        content = text[content_start : end_match.start()]
-        if env == "abstract":
-            blocks.append(Block("heading", "Abstract", level=1))
-            blocks.extend(parse_plain(content, context))
-        elif env == "figure":
-            blocks.append(parse_figure(content, context))
-        elif env == "table":
-            blocks.append(parse_table(content, context))
+    def add_text(self, text: str, style: Style | None = None, raw: bool = False) -> None:
+        if not text:
+            return
+        style = style or self.state.style
+        if text == " ":
+            if not self.para:
+                return
+            last = self.para[-1]
+            if isinstance(last, Break):
+                return
+            if isinstance(last, Text):
+                if last.text.endswith((" ", "\u00a0", "\u2003")):
+                    return
+                if last.style == style or not (last.style.url or last.style.vert or last.style.mono):
+                    self.para[-1] = Text(last.text + " ", last.style)
+                    return
+            self.para.append(Text(" ", replace(style, url=None, vert=None, mono=False)))
+            return
+        if not self.para:
+            self.start_paragraph()
+        self.after_display = False
+        convert = not (raw or style.mono or style.url)
+        last = self.para[-1] if self.para else None
+        if isinstance(last, Text) and last.style == style:
+            merged = last.text + text
+            self.para[-1] = Text(ligatures(merged) if convert else merged, style)
         else:
-            blocks.append(Block("equation", normalize_math(content)))
-        pos = end_match.end()
-    blocks.extend(parse_plain(text[pos:], context))
-    return [block for block in blocks if block.kind != "paragraph" or block.text.strip()]
+            self.para.append(Text(ligatures(text) if convert else text, style))
 
+    def add_runs(self, runs: list) -> None:
+        for run in runs:
+            if isinstance(run, Text):
+                if run.text and not self.para:
+                    self.start_paragraph()
+                if self.para and isinstance(self.para[-1], Text) and self.para[-1].style == run.style:
+                    self.para[-1] = Text(self.para[-1].text + run.text, run.style)
+                elif run.text:
+                    self.para.append(Text(run.text, run.style))
+            else:
+                if not self.para:
+                    self.start_paragraph()
+                self.para.append(run)
 
-def parse_plain(text: str, context: ParseContext) -> list[Block]:
-    text = re.sub(r"\\end\{document\}|\\begin\{document\}|\\documentclass(?:\[[^]]*\])?\{[^{}]*\}", "\n", text)
-    blocks: list[Block] = []
-    parts = re.split(r"(\\(?:section|subsection|subsubsection|paragraph)\*?\{[^{}]*\})", text)
-    current: list[str] = []
-    for part in parts:
-        command_match = re.fullmatch(r"\\(section|subsection|subsubsection|paragraph)\*?\{([^{}]*)\}", part, flags=re.S)
-        if command_match:
-            blocks.extend(paragraph_blocks("".join(current), context))
-            current = []
-            level = {"section": 1, "subsection": 2, "subsubsection": 3, "paragraph": 4}[command_match.group(1)]
-            blocks.append(Block("heading", normalize_text(command_match.group(2), context), level=level))
+    def start_paragraph(self) -> None:
+        self.para_indent = self.indent_next and not self.noindent
+        self.indent_next = True
+        self.noindent = False
+
+    def line_break(self, space: float = 0.0) -> None:
+        if space > 0 and not self.inline_only:
+            self.end_paragraph()
+            self.para_space_before = space
+            return
+        if self.para:
+            last = self.para[-1]
+            if isinstance(last, Text) and last.text.endswith(" "):
+                self.para[-1] = Text(last.text.rstrip(" "), last.style)
+            self.para.append(Break("line"))
+
+    def end_paragraph(self) -> None:
+        runs = self.para
+        self.para = []
+        # Strip trailing spaces and line breaks.
+        while runs and (isinstance(runs[-1], Break) and runs[-1].kind == "line" or isinstance(runs[-1], Text) and not runs[-1].text.strip()):
+            runs.pop()
+        if runs and isinstance(runs[-1], Text):
+            runs[-1] = Text(runs[-1].text.rstrip(" "), runs[-1].style)
+        while runs and isinstance(runs[0], Text) and not runs[0].text.strip():
+            runs.pop(0)
+        if runs and isinstance(runs[0], Text):
+            runs[0] = Text(runs[0].text.lstrip(" "), runs[0].style)
+        if not runs:
+            return
+        align = self.state.align
+        if align == "justify" and any(isinstance(r, Break) for r in runs):
+            align = "left"  # lines ended with \\ are not stretched in LaTeX
+        paragraph = Paragraph(
+            runs,
+            align=align,
+            indent=self.para_indent and align == "justify",
+            hanging=self.state.hanging,
+            size=self.state.size,
+            space_before=self.para_space_before,
+        )
+        self.para_space_before = 0.0
+        self.state.hanging = False
+        self.emit(paragraph)
+
+    def emit(self, block) -> None:
+        if self.list_stack and isinstance(block, Paragraph):
+            self.list_stack[-1].items[-1].append(block)
         else:
-            current.append(part)
-    blocks.extend(paragraph_blocks("".join(current), context))
-    return blocks
+            self.blocks.append(block)
+
+    def flush_block(self) -> None:
+        self.end_paragraph()
+
+    # ------------------------------------------------------------------ rendering entry points
+
+    def walk(self, tokens: list[Tok]) -> list:
+        stream = TokenStream(list(tokens))
+        self.process(stream)
+        self.end_paragraph()
+        return self.blocks
+
+    def render_inline(self, tokens: list[Tok], state: State | None = None) -> list:
+        """Render tokens to a flat list of runs (paragraph breaks become spaces)."""
+        walker = Walker(self.ctx, inline_only=True, state=replace(state or self.state))
+        blocks = walker.walk(tokens)
+        runs: list = []
+        for block in blocks:
+            if isinstance(block, Paragraph):
+                if runs:
+                    runs.append(Text(" ", Style()))
+                runs.extend(block.runs)
+        return merge_runs(runs)
+
+    def render_string(self, text: str) -> list:
+        return self.render_inline(tokenize(text), State(align="left"))
+
+    def plain_text(self, tokens: list[Tok]) -> str:
+        return "".join(r.text for r in self.render_inline(tokens) if isinstance(r, Text))
+
+    # ------------------------------------------------------------------ main loop
+
+    def process(self, stream: TokenStream, stop_env: str | None = None) -> None:
+        while not stream.at_end():
+            tok = stream.next()
+            kind = tok.kind
+            if kind == "char":
+                self.add_text(tok.value)
+            elif kind == "space":
+                self.add_text(" ")
+            elif kind == "par":
+                if self.inline_only:
+                    self.add_text(" ")
+                else:
+                    if not self.para and self.after_display:
+                        # A blank line after display material starts a new, indented paragraph.
+                        self.indent_next = True
+                        self.after_display = False
+                    self.end_paragraph()
+            elif kind == "tilde":
+                self.add_text("\u00a0")
+            elif kind == "bgroup":
+                self.push()
+            elif kind == "egroup":
+                self.pop()
+            elif kind == "math":
+                self.handle_dollar(stream)
+            elif kind == "verb":
+                self.add_text(tok.value, replace(self.state.style, mono=True), raw=True)
+            elif kind in ("align", "sup", "sub", "param"):
+                if kind == "sup":
+                    self.add_text("^")
+                elif kind == "sub":
+                    self.add_text("_")
+            elif kind == "cs":
+                self.handle_cs(tok.value, stream)
+
+    def handle_dollar(self, stream: TokenStream) -> None:
+        nxt = stream.peek()
+        if nxt is not None and nxt.kind == "math":
+            stream.next()
+            body = self.read_until_math(stream, double=True)
+            self.display_math(body, numbered=False)
+            return
+        body = self.read_until_math(stream, double=False)
+        self.inline_math(body)
+
+    @staticmethod
+    def read_until_math(stream: TokenStream, double: bool) -> list[Tok]:
+        out: list[Tok] = []
+        depth = 0
+        while not stream.at_end():
+            tok = stream.next()
+            if tok.kind == "bgroup":
+                depth += 1
+            elif tok.kind == "egroup":
+                depth -= 1
+            if tok.kind == "math" and depth <= 0:
+                if double and stream.peek() is not None and stream.peek().kind == "math":
+                    stream.next()
+                return out
+            out.append(tok)
+        return out
+
+    @staticmethod
+    def read_until_cs(stream: TokenStream, name: str) -> list[Tok]:
+        out: list[Tok] = []
+        while not stream.at_end():
+            tok = stream.next()
+            if tok.kind == "cs" and tok.value == name:
+                return out
+            out.append(tok)
+        return out
+
+    # ------------------------------------------------------------------ math
+
+    def text_renderer(self, tokens: list[Tok]) -> str:
+        return "".join(r.text for r in self.render_inline(tokens, State()) if isinstance(r, Text))
+
+    def parse_math(self, tokens: list[Tok]) -> list:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            items = texmath.parse_math(self.expand_all(tokens), self.text_renderer)
+        for warning in caught:
+            self.ctx.warn(str(warning.message))
+        return items
+
+    def expand_all(self, tokens: list[Tok]) -> list[Tok]:
+        """Expand user macros inside math (math is parsed separately)."""
+        if not any(t.kind == "cs" and t.value in self.ctx.macros for t in tokens):
+            return tokens
+        stream = TokenStream(list(tokens))
+        out: list[Tok] = []
+        guard = 0
+        while not stream.at_end():
+            tok = stream.next()
+            if tok.kind == "cs" and tok.value in self.ctx.macros and guard < 10000:
+                guard += 1
+                stream.push(expand_macro(stream, self.ctx.macros[tok.value]))
+                continue
+            out.append(tok)
+        return out
+
+    def inline_math(self, tokens: list[Tok]) -> None:
+        items = self.parse_math(tokens)
+        if texmath.is_simple(items):
+            base = self.state.style
+            runs = []
+            for run in texmath.to_text_runs(items):
+                runs.append(Text(run.text, replace(base, italic=run.italic, bold=run.bold, mono=False,
+                                                   smallcaps=False, vert=run.vert or base.vert)))
+            self.add_runs(runs)
+        else:
+            self.add_runs([Math(texmath.to_omml(items, display=False), detokenize(tokens))])
+
+    def display_math(self, tokens: list[Tok], numbered: bool, env: str = "equation") -> None:
+        if self.inline_only:
+            self.inline_math(tokens)
+            return
+        # Display math interrupts but does not end the LaTeX paragraph.
+        self.end_paragraph()
+        rows = [tokens]
+        if env in ("align", "align*", "eqnarray", "eqnarray*", "gather", "gather*", "multline", "multline*", "flalign", "flalign*"):
+            rows = split_rows(tokens)
+        for row in rows:
+            if not any(t.kind not in ("space", "par") for t in row):
+                continue
+            row_numbered = numbered and not any(t.kind == "cs" and t.value in ("nonumber", "notag") for t in row)
+            tag = None
+            for idx, t in enumerate(row):
+                if t.kind == "cs" and t.value == "tag":
+                    sub = TokenStream(row[idx + 1 :])
+                    tag = group_text(sub.read_arg())
+            number = None
+            if tag is not None:
+                number = tag
+            elif row_numbered:
+                self.ctx.counters["equation"] += 1
+                number = str(self.ctx.counters["equation"])
+            if number is not None:
+                self.ctx.current_label = number
+            for idx, t in enumerate(row):
+                if t.kind == "cs" and t.value == "label":
+                    sub = TokenStream(row[idx + 1 :])
+                    self.define_label(group_text(sub.read_arg()))
+            cleaned = strip_commands(row, {"label": 1, "tag": 1})
+            items = self.parse_math([t for t in cleaned if not (t.kind == "align")])
+            self.blocks.append(Equation(texmath.to_omml(items, display=True), detokenize(row).strip(), number))
+        self.indent_next = False
+        self.after_display = True
+
+    # ------------------------------------------------------------------ labels and references
+
+    def define_label(self, name: str) -> None:
+        self.ctx.new_labels[name] = self.ctx.current_label
+
+    def reference(self, name: str) -> str:
+        if name in self.ctx.labels:
+            return self.ctx.labels[name]
+        self.ctx.warn(f"undefined reference '{name}'")
+        return "??"
+
+    # ------------------------------------------------------------------ control sequences
+
+    def handle_cs(self, name: str, stream: TokenStream) -> None:
+        ctx = self.ctx
+        if name in ctx.macros:
+            stream.push(expand_macro(stream, ctx.macros[name]))
+            return
+        if name in ("newcommand", "renewcommand", "providecommand", "DeclareRobustCommand", "def"):
+            self.define_macro(name, stream)
+            return
+        if name in TEXT_SYMBOLS:
+            self.add_text(TEXT_SYMBOLS[name], raw=name in ("{", "}", "_", "textbackslash", "textquotesingle"))
+            return
+        if name in SPACING:
+            self.add_text(SPACING[name], raw=True)
+            return
+        if name in ACCENTS:
+            arg = stream.read_arg()
+            base = self.plain_text(arg) or " "
+            self.add_text(unicodedata.normalize("NFC", base[0] + ACCENTS[name] + base[1:]))
+            return
+        if name in ("\\", "newline"):
+            stream.read_star()
+            space = 0.0
+            opt = stream.read_optional() if name == "\\" else None
+            if opt:
+                space = dimension_to_pt(group_text(opt))
+            self.line_break(space)
+            return
+        if name == "par":
+            if self.inline_only:
+                self.add_text(" ")
+            else:
+                self.end_paragraph()
+            return
+        if name == "noindent":
+            if not self.para:
+                self.noindent = True
+            return
+        if name in ("centering", "raggedright", "raggedleft"):
+            self.state.align = {"centering": "center", "raggedright": "left", "raggedleft": "right"}[name]
+            return
+        if name in SIZES:
+            self.state.size = SIZES[name]
+            return
+        if name in STYLE_DECLARATIONS:
+            self.set_style(**STYLE_DECLARATIONS[name])
+            return
+        if name == "em":
+            self.set_style(italic=not self.state.style.italic)
+            return
+        if name in STYLE_COMMANDS:
+            arg = stream.read_arg()
+            self.push()
+            self.set_style(**STYLE_COMMANDS[name])
+            self.process(TokenStream(arg))
+            self.pop()
+            return
+        if name in ("emph", "mkbibemph"):
+            arg = stream.read_arg()
+            self.push()
+            self.set_style(italic=not self.state.style.italic)
+            self.process(TokenStream(arg))
+            self.pop()
+            return
+        if name == "mkbibquote":
+            arg = stream.read_arg()
+            self.add_text("“", raw=True)
+            self.process(TokenStream(arg))
+            self.add_text("”", raw=True)
+            return
+        if name in ("ensuremath", "(" ):
+            arg = stream.read_arg() if name == "ensuremath" else self.read_until_cs(stream, ")")
+            self.inline_math(arg)
+            return
+        if name == "[":
+            self.display_math(self.read_until_cs(stream, "]"), numbered=False)
+            return
+        if name in SECTION_LEVELS:
+            self.section(name, stream)
+            return
+        if name == "begin":
+            env = group_text(stream.read_arg())
+            self.begin_environment(env, stream)
+            return
+        if name == "end":
+            env = group_text(stream.read_arg())
+            self.end_environment(env)
+            return
+        if name == "item":
+            label = stream.read_optional()
+            self.list_item(label)
+            return
+        if name in ("ref", "eqref", "autoref", "cref", "Cref", "vref", "pageref", "nameref"):
+            stream.read_star()
+            keys = [k.strip() for k in group_text(stream.read_arg()).split(",") if k.strip()]
+            numbers = [self.reference(k) for k in keys]
+            if name == "pageref":
+                self.ctx.warn("\\pageref cannot be resolved in DOCX output")
+            text = ", ".join(numbers)
+            if name == "eqref":
+                text = f"({text})"
+            elif name in ("autoref", "cref", "Cref"):
+                prefix = {"fig": "Figure", "tab": "Table", "eq": "Equation", "sec": "Section"}
+                kind = keys[0].split(":")[0] if keys and ":" in keys[0] else ""
+                text = f"{prefix.get(kind, '')} {text}".strip()
+            self.add_text(text)
+            return
+        if name == "label":
+            self.define_label(group_text(stream.read_arg()))
+            return
+        if self.handle_citation(name, stream):
+            return
+        if name == "href":
+            url = verbatim_arg(stream)
+            text_tokens = stream.read_arg()
+            self.push()
+            self.set_style(url=url)
+            self.process(TokenStream(text_tokens))
+            self.pop()
+            return
+        if name in ("url", "nolinkurl", "path"):
+            url = verbatim_arg(stream)
+            style = replace(self.state.style, url=url if name == "url" else self.state.style.url)
+            self.add_text(url, style, raw=True)
+            return
+        if name == "today":
+            today = date.today()
+            self.add_text(f"{MONTHS[today.month - 1]} {today.day}, {today.year}")
+            return
+        if name in ("title", "author", "date"):
+            stream.read_optional()
+            setattr(self.ctx.metadata, name, stream.read_arg())
+            return
+        if name == "maketitle":
+            self.make_title()
+            return
+        if name == "and":
+            self.line_break()
+            return
+        if name == "thanks":
+            arg = stream.read_arg()
+            self.add_text("*", replace(self.state.style, vert="super"))
+            self.ctx.warn("\\thanks is rendered as an asterisk only")
+            del arg
+            return
+        if name == "tableofcontents":
+            self.end_paragraph()
+            self.blocks.append(TableOfContents())
+            return
+        if name in ("printbibliography", "bibliography"):
+            if name == "printbibliography":
+                stream.read_optional()
+            else:
+                stream.read_arg()
+            self.bibliography_block()
+            return
+        if name == "nocite":
+            if self.ctx.bibliography is not None:
+                for key in group_text(stream.read_arg()).split(","):
+                    self.ctx.bibliography.cite(key.strip())
+            else:
+                stream.read_arg()
+            return
+        if name == "appendix":
+            self.ctx.appendix = True
+            self.ctx.counters["section"] = 0
+            return
+        if name in ("newpage", "clearpage", "cleardoublepage", "pagebreak"):
+            stream.read_optional()
+            if not self.inline_only:
+                self.end_paragraph()
+                self.blocks.append(PageBreak())
+            return
+        if name in ("footnote", "footnotetext"):
+            stream.read_optional()
+            arg = stream.read_arg()
+            self.ctx.warn("footnotes are rendered inline in parentheses")
+            self.add_text(" (")
+            self.process(TokenStream(arg))
+            self.add_text(")")
+            return
+        if name in ("parbox",):
+            stream.read_optional()
+            stream.read_optional()
+            stream.read_optional()
+            stream.read_arg()
+            content = stream.read_arg()
+            self.boxed_content(content)
+            return
+        if name in ("makebox", "framebox"):
+            stream.read_optional()
+            stream.read_optional()
+            self.process(TokenStream(stream.read_arg()))
+            return
+        if name in ("mbox", "hbox", "fbox", "text"):
+            self.push()
+            self.process(TokenStream(stream.read_arg()))
+            self.pop()
+            return
+        if name in ("resizebox", "scalebox", "rotatebox", "adjustbox"):
+            stream.read_star()
+            stream.read_optional()
+            stream.read_arg()
+            if name == "resizebox":
+                stream.read_arg()
+            self.process(TokenStream(stream.read_arg()))
+            return
+        if name == "textcolor":
+            stream.read_optional()
+            stream.read_arg()
+            self.process(TokenStream(stream.read_arg()))
+            return
+        if name in ("hspace", "vspace", "hspace*", "vspace*"):
+            stream.read_star()
+            stream.read_arg()
+            return
+        if name in SKIP_ARGS:
+            stream.read_star()
+            n_opt, n_args = SKIP_ARGS[name]
+            for _ in range(n_opt):
+                stream.read_optional()
+            for _ in range(n_args):
+                stream.read_arg()
+            return
+        if name in ASSIGNMENTS:
+            if name == "hangindent":
+                self.state.hanging = True
+            stream.read_dimen()
+            return
+        if name == "includegraphics":
+            stream.read_optional()
+            stream.read_arg()
+            self.ctx.warn("\\includegraphics outside a figure environment is not rendered")
+            return
+        if name == "caption":
+            stream.read_optional()
+            self.process(TokenStream(stream.read_arg()))
+            return
+        if name in IGNORED:
+            stream.read_star()
+            return
+        # Unknown command: warn and render its arguments (if any) as ordinary text.
+        nxt = stream.peek()
+        if nxt is not None and nxt.kind == "char" and nxt.value == "=":
+            stream.read_dimen()
+            return
+        self.ctx.warn(f"unsupported command \\{name}; rendering its arguments as text")
+
+    def define_macro(self, name: str, stream: TokenStream) -> None:
+        if name == "def":
+            target = stream.next()
+            params = []
+            while stream.peek() is not None and stream.peek().kind != "bgroup":
+                params.append(stream.next())
+            body = stream.read_arg()
+            if target is not None and target.kind == "cs":
+                self.ctx.macros[target.value] = Macro(sum(1 for p in params if p.kind == "param"), None, body)
+            return
+        stream.read_star()
+        target = stream.read_arg()
+        nargs = stream.read_optional()
+        default = stream.read_optional()
+        body = stream.read_arg()
+        if len(target) == 1 and target[0].kind == "cs":
+            try:
+                count = int(group_text(nargs)) if nargs else 0
+            except ValueError:
+                count = 0
+            if target[0].value not in ("arraystretch",):
+                self.ctx.macros[target[0].value] = Macro(count, default, body)
+
+    def boxed_content(self, content: list[Tok]) -> None:
+        if self.inline_only:
+            self.process(TokenStream(content))
+            return
+        self.end_paragraph()
+        self.push()
+        self.process(TokenStream(content))
+        self.end_paragraph()
+        self.pop()
+
+    # ------------------------------------------------------------------ citations
+
+    CITE_MODES = {
+        "parencite": "paren", "Parencite": "paren", "autocite": "paren", "Autocite": "paren",
+        "cite": "bare", "Cite": "bare", "citep": "paren", "citealp": "bare", "textcite": "text",
+        "Textcite": "text", "citet": "text", "citeauthor": "author", "Citeauthor": "author",
+        "citeyear": "year", "citeyearpar": "paren-year", "smartcite": "paren", "footcite": "paren",
+        "parencites": "paren", "cites": "bare", "textcites": "text", "autocites": "paren",
+    }
+
+    def handle_citation(self, name: str, stream: TokenStream) -> bool:
+        if name not in self.CITE_MODES:
+            return False
+        mode = self.CITE_MODES[name]
+        stream.read_star()
+        groups = []
+        multi = name.endswith("cites")
+        if multi:
+            # \cites(pre)(post)[pre][post]{key}[pre][post]{key}...
+            while True:
+                save = stream.pos
+                opt1 = stream.read_optional()
+                opt2 = stream.read_optional()
+                stream.skip_space()
+                if stream.peek() is None or stream.peek().kind != "bgroup":
+                    stream.pos = save
+                    break
+                groups.append((opt1, opt2, stream.read_arg()))
+        else:
+            opt1 = stream.read_optional()
+            opt2 = stream.read_optional()
+            groups.append((opt1, opt2, stream.read_arg()))
+        bib = self.ctx.bibliography
+        if mode == "paren" and len(groups) > 1:
+            parts = []
+            for opt1, opt2, keys_tokens in groups:
+                parts.append(self.cite_runs(keys_tokens, "bare", opt1, opt2))
+            runs = [Text("(")]
+            for idx, part in enumerate(parts):
+                if idx:
+                    runs.append(Text("; "))
+                runs.extend(part)
+            runs.append(Text(")"))
+        else:
+            runs = []
+            for idx, (opt1, opt2, keys_tokens) in enumerate(groups):
+                if idx:
+                    runs.append(Text("; "))
+                if mode == "paren-year":
+                    runs.extend([Text("(")] + self.cite_runs(keys_tokens, "year", opt1, opt2) + [Text(")")])
+                else:
+                    runs.extend(self.cite_runs(keys_tokens, mode, opt1, opt2))
+        if bib is None:
+            self.ctx.warn("citations found but no biblatex bibliography resource is configured")
+        base = self.state.style
+        self.add_runs([Text(r.text, replace(r.style, bold=r.style.bold or base.bold, italic=r.style.italic != base.italic if r.style.italic else base.italic)) if isinstance(r, Text) else r for r in runs])
+        return True
+
+    def cite_runs(self, keys_tokens: list[Tok], mode: str, opt1, opt2) -> list:
+        keys = [k.strip() for k in group_text(keys_tokens).split(",") if k.strip()]
+        prenote = postnote = None
+        if opt1 is not None and opt2 is not None:
+            prenote, postnote = detokenize(opt1), detokenize(opt2)
+        elif opt1 is not None:
+            postnote = detokenize(opt1)
+        bib = self.ctx.bibliography
+        if bib is None:
+            return [Text("(" + "; ".join(keys) + ")" if mode == "paren" else "; ".join(keys))]
+        for key in keys:
+            bib.cite(key)
+        return bib.citation(keys, mode, prenote or None, postnote or None)
+
+    def bibliography_block(self) -> None:
+        self.end_paragraph()
+        bib = self.ctx.bibliography
+        if bib is None:
+            self.ctx.warn("\\printbibliography found but no bibliography resource could be loaded")
+            return
+        self.blocks.append(Heading(1, [Text("References")], toc=False))
+        for key, runs in bib.reference_list():
+            self.blocks.append(Paragraph(runs, align="left", hanging=True, style="Bibliography", bookmark=None))
+        self.indent_next = False
+
+    # ------------------------------------------------------------------ title
+
+    def make_title(self) -> None:
+        if self.inline_only:
+            return
+        self.end_paragraph()
+        meta = self.ctx.metadata
+        if meta.title:
+            runs = self.render_inline(strip_line_breaks(meta.title), State(align="center"))
+            self.blocks.append(Paragraph(runs, align="center", style="Title"))
+        if meta.author:
+            walker = Walker(self.ctx, state=State(align="center"))
+            walker.indent_next = False
+            blocks = walker.walk(meta.author)
+            for block in blocks:
+                if isinstance(block, Paragraph):
+                    block.indent = False
+                    block.style = "Author" if block.align == "center" else "Affiliation"
+                self.blocks.append(block)
+        date_tokens = meta.date if meta.date is not None else [Tok("cs", "today")]
+        runs = self.render_inline(date_tokens, State(align="center"))
+        if runs:
+            self.blocks.append(Paragraph(runs, align="center", style="Author", space_before=6))
+        self.indent_next = False
+
+    # ------------------------------------------------------------------ sectioning
+
+    def section(self, name: str, stream: TokenStream) -> None:
+        star = stream.read_star()
+        stream.read_optional()
+        title_tokens = stream.read_arg()
+        if self.inline_only:
+            self.process(TokenStream(title_tokens))
+            return
+        self.end_paragraph()
+        level = SECTION_LEVELS[name]
+        counters = self.ctx.counters
+        number = ""
+        if not star and level <= 3 and level >= 1:
+            keys = ["section", "subsection", "subsubsection"]
+            counters[keys[level - 1]] += 1
+            for key in keys[level:]:
+                counters[key] = 0
+            parts = []
+            for key in keys[:level]:
+                value = counters[key]
+                if key == "section" and self.ctx.appendix:
+                    parts.append(chr(ord("A") + value - 1) if value else "0")
+                else:
+                    parts.append(str(value))
+            number = ".".join(parts)
+            self.ctx.current_label = number
+        runs = self.render_inline(title_tokens, State(align="left"))
+        self.blocks.append(Heading(max(level, 1), runs, number=number, toc=not star and 1 <= level <= 3))
+        self.indent_next = False
+
+    # ------------------------------------------------------------------ environments
+
+    def begin_environment(self, env: str, stream: TokenStream) -> None:
+        base = env.rstrip("*")
+        if env == "document":
+            return
+        if base in ("figure", "wrapfigure", "SCfigure"):
+            if env == "wrapfigure":
+                stream.read_optional()
+                stream.read_arg()
+                stream.read_optional()
+                stream.read_arg()
+            else:
+                stream.read_optional()
+            body = stream.read_environment_body(env)
+            self.figure(body)
+            return
+        if base in ("table", "wraptable"):
+            stream.read_optional()
+            body = stream.read_environment_body(env)
+            self.table_env(body)
+            return
+        if base in ("tabular", "tabularx", "tabulary", "longtable", "tabu", "array"):
+            body = stream.read_environment_body(env)
+            self.end_paragraph()
+            if base in ("tabularx", "tabulary"):
+                sub = TokenStream(body)
+                sub.read_arg()
+                body = sub.tokens[sub.pos :]
+            table = self.build_table(body, caption=[], number="")
+            if table is not None:
+                self.blocks.append(table)
+            return
+        if base in ("equation", "displaymath", "align", "gather", "multline", "eqnarray", "flalign", "math"):
+            body = stream.read_environment_body(env)
+            if base == "math":
+                self.inline_math(body)
+                return
+            numbered = not env.endswith("*") and base != "displaymath"
+            self.display_math(body, numbered=numbered, env=env)
+            return
+        if base == "abstract":
+            self.end_paragraph()
+            if not self.inline_only:
+                self.blocks.append(Heading(1, [Text("Abstract")], toc=False))
+            self.push()
+            self.indent_next = False
+            self.env_stack.append(env)
+            return
+        if base in ("itemize", "enumerate", "description"):
+            self.end_paragraph()
+            block = ListBlock(ordered=base == "enumerate", items=[], level=len(self.list_stack))
+            if not self.inline_only:
+                self.blocks.append(block) if not self.list_stack else self.list_stack[-1].items[-1].append(block)
+            self.list_stack.append(block)
+            self.push()
+            self.env_stack.append(env)
+            return
+        if base in ("center", "flushleft", "flushright"):
+            self.end_paragraph()
+            self.push()
+            self.state.align = {"center": "center", "flushleft": "left", "flushright": "right"}[base]
+            self.env_stack.append(env)
+            return
+        if base in ("minipage",):
+            stream.read_optional()
+            stream.read_optional()
+            stream.read_optional()
+            stream.read_arg()
+            self.end_paragraph()
+            self.push()
+            self.env_stack.append(env)
+            return
+        if base in ("quote", "quotation", "verse"):
+            self.end_paragraph()
+            self.push()
+            self.env_stack.append(env)
+            return
+        if base in ("verbatim", "lstlisting", "minted"):
+            if base == "minted":
+                stream.read_arg()
+            body = stream.read_environment_body(env)
+            self.end_paragraph()
+            text = "".join(t.value for t in body if t.kind == "verb")
+            for line in text.split("\n"):
+                self.blocks.append(Paragraph([Text(line, Style(mono=True))], align="left"))
+            return
+        if base in ("tikzpicture", "picture", "pgfpicture"):
+            body = stream.read_environment_body(env)
+            self.ctx.warn(f"{env} outside a figure environment is rendered as an unnumbered figure")
+            full = [Tok("cs", "begin"), BGROUP, *[Tok("char", c) for c in env], EGROUP, *body,
+                    Tok("cs", "end"), BGROUP, *[Tok("char", c) for c in env], EGROUP]
+            self.end_paragraph()
+            self.blocks.append(Figure("", [], detokenize(full)))
+            return
+        if base == "thebibliography":
+            stream.read_arg()
+            self.end_paragraph()
+            self.blocks.append(Heading(1, [Text("References")], toc=False))
+            body = stream.read_environment_body(env)
+            items = split_on_cs(body, "bibitem")
+            for item in items[1:]:
+                sub = TokenStream(item)
+                sub.read_optional()
+                sub.read_arg()
+                runs = self.render_inline(sub.tokens[sub.pos :])
+                if runs:
+                    self.blocks.append(Paragraph(runs, align="left", hanging=True, style="Bibliography"))
+            return
+        # Unknown environments: render their content.
+        self.end_paragraph()
+        self.push()
+        self.env_stack.append(env)
+
+    def end_environment(self, env: str) -> None:
+        base = env.rstrip("*")
+        if env == "document":
+            return
+        self.end_paragraph()
+        if base in ("itemize", "enumerate", "description") and self.list_stack:
+            self.list_stack.pop()
+        if self.env_stack and self.env_stack[-1] == env:
+            self.env_stack.pop()
+            self.pop()
+        if base in ("itemize", "enumerate", "description", "center", "flushleft", "flushright",
+                    "minipage", "quote", "quotation", "verse"):
+            self.indent_next = False
+            self.after_display = True
+        if base == "abstract":
+            self.indent_next = False
+
+    def list_item(self, label: list[Tok] | None) -> None:
+        self.end_paragraph()
+        if not self.list_stack:
+            return
+        self.list_stack[-1].items.append([])
+        self.indent_next = False
+        if label is not None:
+            self.push()
+            self.set_style(bold=True)
+            self.process(TokenStream(label))
+            self.pop()
+            self.add_text(" ")
+
+    # ------------------------------------------------------------------ floats
+
+    def extract_caption(self, body: list[Tok]):
+        """Split top-level \\caption and \\label out of a float body."""
+        caption: list[Tok] | None = None
+        labels: list[str] = []
+        rest: list[Tok] = []
+        caption_index = None
+        stream = TokenStream(list(body))
+        depth = 0
+        while not stream.at_end():
+            tok = stream.next()
+            if tok.kind == "cs" and tok.value in ("begin", "end"):
+                rest.append(tok)
+                name_tokens = stream.read_arg()
+                rest.extend([BGROUP, *name_tokens, EGROUP])
+                depth += 1 if tok.value == "begin" else -1
+                continue
+            if depth == 0 and tok.kind == "cs" and tok.value == "cprotect":
+                continue
+            if depth == 0 and tok.kind == "cs" and tok.value == "caption":
+                stream.read_star()
+                stream.read_optional()
+                caption = stream.read_arg()
+                caption_index = len(rest)
+                continue
+            if depth == 0 and tok.kind == "cs" and tok.value == "label":
+                labels.append(group_text(stream.read_arg()))
+                continue
+            rest.append(tok)
+        return caption, labels, rest, caption_index
+
+    def float_labels(self, caption: list[Tok] | None, labels: list[str], number: str) -> list:
+        self.ctx.current_label = number
+        for label in labels:
+            self.define_label(label)
+        if caption is None:
+            return []
+        runs = self.render_inline(caption, State(align="justify"))
+        # Labels inside the caption text itself.
+        for idx, tok in enumerate(caption):
+            if tok.kind == "cs" and tok.value == "label":
+                self.define_label(group_text(TokenStream(caption[idx + 1 :]).read_arg()))
+        return runs
+
+    def figure(self, body: list[Tok]) -> None:
+        if self.inline_only:
+            return
+        caption, labels, rest, _ = self.extract_caption(body)
+        self.end_paragraph()
+        number = ""
+        if caption is not None:
+            self.ctx.counters["figure"] += 1
+            number = str(self.ctx.counters["figure"])
+        caption_runs = self.float_labels(caption, labels, number)
+        self.blocks.append(Figure(number, caption_runs, detokenize(rest).strip()))
+
+    def table_env(self, body: list[Tok]) -> None:
+        if self.inline_only:
+            return
+        caption, labels, rest, caption_index = self.extract_caption(body)
+        self.end_paragraph()
+        number = ""
+        if caption is not None:
+            self.ctx.counters["table"] += 1
+            number = str(self.ctx.counters["table"])
+        caption_runs = self.float_labels(caption, labels, number)
+        found = find_tabular(rest)
+        size = "normal"
+        for tok in rest[: found[2] if found else len(rest)]:
+            if tok.kind == "cs" and tok.value in SIZES:
+                size = SIZES[tok.value]
+        if not found:
+            self.blocks.append(Paragraph(caption_runs, align="justify", style="Caption"))
+            return
+        env, tabular_body, start = found
+        if env in ("tabularx", "tabulary"):
+            sub = TokenStream(tabular_body)
+            sub.read_arg()
+            tabular_body = sub.tokens[sub.pos :]
+        table = self.build_table(tabular_body, caption_runs, number, size)
+        if table is None:
+            return
+        table.caption_above = caption_index is not None and caption_index < start
+        self.blocks.append(table)
+
+    def build_table(self, body: list[Tok], caption: list, number: str, size: str = "normal") -> Table | None:
+        stream = TokenStream(list(body))
+        stream.read_optional()  # position argument
+        spec_tokens = stream.read_arg()
+        columns, vrules = parse_column_spec(spec_tokens)
+        rows_tokens = stream.tokens[stream.pos :]
+        rows: list[list[Cell]] = []
+        rules: set[int] = set()
+        pending_multirow: dict[int, int] = {}
+        for row_tokens in split_rows(rows_tokens, keep_rules=True):
+            # Leading rules belong above this row.
+            sub = TokenStream(row_tokens)
+            while True:
+                sub.skip_space(par=True)
+                tok = sub.peek()
+                if tok is not None and tok.kind == "cs" and tok.value in ("hline", "toprule", "midrule", "bottomrule", "cline", "cmidrule", "specialrule"):
+                    sub.next()
+                    if tok.value in ("cline", "cmidrule"):
+                        sub.read_optional()
+                        sub.read_arg()
+                    if tok.value == "specialrule":
+                        sub.read_arg(), sub.read_arg(), sub.read_arg()
+                    rules.add(len(rows))
+                    continue
+                if tok is not None and tok.kind == "cs" and tok.value in ("rowcolor", "noalign"):
+                    sub.next()
+                    sub.read_optional()
+                    sub.read_arg()
+                    continue
+                break
+            remaining = sub.tokens[sub.pos :]
+            if not any(t.kind not in ("space", "par") for t in remaining):
+                continue
+            cells_tokens = split_cells(remaining)
+            row: list[Cell] = []
+            col = 0
+            for cell_tokens in cells_tokens:
+                cell = self.build_cell(cell_tokens, columns, col, size)
+                if pending_multirow.get(col, 0) > 0:
+                    pending_multirow[col] -= 1
+                    if not any(isinstance(r, Text) and r.text.strip() or not isinstance(r, Text) for r in cell.runs):
+                        cell.placeholder = True
+                if cell.rowspan > 1:
+                    pending_multirow[col] = cell.rowspan - 1
+                row.append(cell)
+                col += cell.colspan
+            rows.append(row)
+        if not rows:
+            return None
+        ncols = max(len(columns), max(sum(c.colspan for c in r) for r in rows))
+        return Table(number, caption, rows, rules=rules, vrules=vrules, ncols=ncols, size=size)
+
+    def build_cell(self, tokens: list[Tok], columns: list[str], col: int, size: str) -> Cell:
+        stream = TokenStream(list(tokens))
+        stream.skip_space(par=True)
+        align = columns[col] if col < len(columns) else "left"
+        colspan = rowspan = 1
+        tok = stream.peek()
+        content = tokens
+        if tok is not None and tok.kind == "cs" and tok.value == "multicolumn":
+            stream.next()
+            try:
+                colspan = int(group_text(stream.read_arg()))
+            except ValueError:
+                colspan = 1
+            spec, _ = parse_column_spec(stream.read_arg())
+            align = spec[0] if spec else align
+            content = stream.read_arg()
+            inner = TokenStream(list(content))
+            inner.skip_space()
+            tok = inner.peek()
+            if tok is not None and tok.kind == "cs" and tok.value == "multirow":
+                stream = inner
+        if tok is not None and tok.kind == "cs" and tok.value == "multirow":
+            stream.next()
+            stream.read_optional()
+            try:
+                rowspan = abs(int(float(group_text(stream.read_arg()))))
+            except ValueError:
+                rowspan = 1
+            stream.read_optional()
+            stream.read_arg()
+            stream.read_optional()
+            content = stream.read_arg()
+        state = State(align=align)
+        runs = self.render_inline(content, state)
+        return Cell(runs, align=align, colspan=colspan, rowspan=max(rowspan, 1))
 
 
-def paragraph_blocks(text: str, context: ParseContext) -> list[Block]:
-    text = text.replace("\\\\", "\n")
-    raw_paragraphs = re.split(r"\n\s*\n+", text)
-    blocks = []
-    for para in raw_paragraphs:
-        para = normalize_text(para, context).strip()
-        if para:
-            blocks.append(Block("paragraph", para))
-    return blocks
+# ---------------------------------------------------------------------- helpers
 
 
-def parse_figure(content: str, context: ParseContext) -> Block:
-    context.figure_count += 1
-    label = extract_braced_command(content, "label")
-    if label:
-        context.labels[label] = str(context.figure_count)
-    caption = normalize_text(extract_braced_command(content, "caption") or "", context)
-    text = f"[Figure {context.figure_count} omitted]"
-    return Block("figure", text=text, number=context.figure_count, caption=caption)
+def ligatures(text: str) -> str:
+    text = text.replace("---", "—").replace("--", "–").replace("–-", "—")
+    text = text.replace("``", "“").replace("''", "”").replace("’’", "”").replace("‘‘", "“")
+    text = text.replace("`", "‘").replace("'", "’").replace("!‘", "¡").replace("?‘", "¿")
+    return text
 
 
-def parse_table(content: str, context: ParseContext) -> Block:
-    context.table_count += 1
-    label = extract_braced_command(content, "label")
-    if label:
-        context.labels[label] = str(context.table_count)
-    caption = normalize_text(extract_braced_command(content, "caption") or "", context)
-    tabular = extract_environment(content, "tabular")
-    rows = parse_tabular(tabular or "", context)
-    return Block("table", number=context.table_count, caption=caption, rows=rows)
+def merge_runs(runs: list) -> list:
+    out: list = []
+    for run in runs:
+        if isinstance(run, Text):
+            if not run.text:
+                continue
+            if out and isinstance(out[-1], Text) and out[-1].style == run.style:
+                out[-1] = Text(out[-1].text + run.text, run.style)
+                continue
+        out.append(run)
+    return out
 
 
-def parse_tabular(content: str, context: ParseContext) -> list[list[str]]:
-    if not content:
-        return []
-    content = re.sub(r"^\s*\{[^{}]*\}", "", content.strip(), count=1, flags=re.S)
-    content = re.sub(r"\\(?:hline|toprule|midrule|bottomrule)\b", "\n", content)
-    content = re.sub(r"\\multirow(?:\[[^]]*\])?\{[^{}]*\}\{[^{}]*\}\{([^{}]*)\}", r"\1", content)
-    content = re.sub(r"\\multicolumn\{[^{}]*\}\{[^{}]*\}\{([^{}]*)\}", r"\1", content)
-    rows = []
-    for row_text in split_latex_rows(content):
-        cells = [normalize_text(cell, context).strip() for cell in split_latex_cells(row_text)]
-        cells = [cell for cell in cells if cell or len(cells) > 1]
-        if cells:
-            rows.append(cells)
+def strip_line_breaks(tokens: list[Tok]) -> list[Tok]:
+    out = []
+    stream = TokenStream(list(tokens))
+    while not stream.at_end():
+        tok = stream.next()
+        if tok.kind == "cs" and tok.value in ("\\", "newline"):
+            stream.read_star()
+            stream.read_optional()
+            out.append(Tok("space", " "))
+            continue
+        out.append(tok)
+    return out
+
+
+def strip_commands(tokens: list[Tok], commands: dict[str, int]) -> list[Tok]:
+    out = []
+    stream = TokenStream(list(tokens))
+    while not stream.at_end():
+        tok = stream.next()
+        if tok.kind == "cs" and tok.value in commands:
+            for _ in range(commands[tok.value]):
+                stream.read_arg()
+            continue
+        out.append(tok)
+    return out
+
+
+def verbatim_arg(stream: TokenStream) -> str:
+    tokens = stream.read_arg()
+    out = []
+    for tok in tokens:
+        if tok.kind == "cs":
+            out.append(tok.value if len(tok.value) == 1 and not tok.value.isalpha() else "\\" + tok.value)
+        elif tok.kind == "tilde":
+            out.append("~")
+        elif tok.kind == "space":
+            out.append(" ")
+        elif tok.kind in ("bgroup", "egroup"):
+            continue
+        else:
+            out.append(tok.value)
+    return "".join(out).strip()
+
+
+def dimension_to_pt(value: str) -> float:
+    match = re.match(r"\s*(-?[\d.]+)\s*([a-z]+)", value)
+    if not match:
+        return 6.0
+    number = float(match.group(1))
+    unit = match.group(2)
+    factor = {"pt": 1.0, "em": 11.0, "ex": 5.0, "mm": 2.845, "cm": 28.45, "in": 72.27, "bp": 1.0, "pc": 12.0}
+    return number * factor.get(unit, 1.0)
+
+
+def split_rows(tokens: list[Tok], keep_rules: bool = False) -> list[list[Tok]]:
+    rows: list[list[Tok]] = [[]]
+    depth = 0
+    stream = TokenStream(list(tokens))
+    while not stream.at_end():
+        tok = stream.next()
+        if tok.kind == "bgroup":
+            depth += 1
+        elif tok.kind == "egroup":
+            depth -= 1
+        elif tok.kind == "cs" and tok.value in ("begin", "end"):
+            depth += 1 if tok.value == "begin" else -1
+        if depth == 0 and tok.kind == "cs" and tok.value in ("\\", "tabularnewline"):
+            stream.read_star()
+            stream.read_optional()
+            rows.append([])
+            continue
+        rows[-1].append(tok)
     return rows
 
 
-def split_latex_rows(text: str) -> list[str]:
-    rows: list[str] = []
-    buf: list[str] = []
+def split_cells(tokens: list[Tok]) -> list[list[Tok]]:
+    cells: list[list[Tok]] = [[]]
     depth = 0
-    i = 0
-    while i < len(text):
-        ch = text[i]
-        if ch == "{":
+    for tok in tokens:
+        if tok.kind == "bgroup":
             depth += 1
-        elif ch == "}":
-            depth = max(0, depth - 1)
-        if depth == 0 and text.startswith(r"\\", i):
-            row = "".join(buf).strip()
-            if row:
-                rows.append(row)
-            buf = []
-            i += 2
+        elif tok.kind == "egroup":
+            depth -= 1
+        elif tok.kind == "cs" and tok.value in ("begin", "end"):
+            depth += 1 if tok.value == "begin" else -1
+        if depth == 0 and tok.kind == "align":
+            cells.append([])
             continue
-        buf.append(ch)
-        i += 1
-    tail = "".join(buf).strip()
-    if tail:
-        rows.append(tail)
-    return rows
-
-
-def split_latex_cells(row: str) -> list[str]:
-    cells: list[str] = []
-    buf: list[str] = []
-    depth = 0
-    for ch in row:
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth = max(0, depth - 1)
-        if ch == "&" and depth == 0:
-            cells.append("".join(buf))
-            buf = []
-        else:
-            buf.append(ch)
-    cells.append("".join(buf))
+        cells[-1].append(tok)
     return cells
 
 
-def normalize_text(text: str, context: ParseContext | None = None) -> str:
-    context = context or ParseContext()
-    text = strip_comments(text)
-    text = text.replace("\u2010", "-")
-    text = re.sub(r"~|\\[,;:! ]", " ", text)
-    text = re.sub(r"\\(?:noindent|centering|small|normalsize|footnotesize|scriptsize)\b", "", text)
-    text = text.replace(r"\-", "")
-    text = re.sub(r"\\(?:cprotect|protect)\b", "", text)
-    text = replace_citations(text)
-    text = re.sub(r"\\ref\{([^{}]+)\}", lambda m: context.labels.get(m.group(1), f"reference {m.group(1)}"), text)
-    text = re.sub(r"\\label\{[^{}]*\}", "", text)
-    text = re.sub(r"\\href\{([^{}]*)\}\{([^{}]*)\}", lambda m: normalize_text(m.group(2), context), text)
-    text = re.sub(r"\\url\{([^{}]*)\}|\\nolinkurl\{([^{}]*)\}", lambda m: m.group(1) or m.group(2), text)
-    text = replace_math(text)
-    text = apply_inline_formatting(text, context)
-    text = unwrap_text_commands(text, context)
-    for name, value in {**GREEK, **SYMBOLS}.items():
-        text = text.replace(f"\\{name}", value)
-    text = text.replace("\\%", "%").replace("\\&", "&").replace("\\$", "$").replace("\\#", "#")
-    text = text.replace("\\_", "_").replace("\\{", "{").replace("\\}", "}")
-    text = text.replace("---", "—").replace("--", "–")
-    text = text.replace("``", "“").replace("''", "”")
-    text = re.sub(r"\\[a-zA-Z@]+\*?(?:\[[^]]*\])?", "", text)
-    text = text.replace("{", "").replace("}", "")
-    text = re.sub(r"[ \t\r\f\v]+", " ", text)
-    text = re.sub(r" *\n *", "\n", text)
-    return text.strip()
-
-
-def apply_inline_formatting(text: str, context: ParseContext) -> str:
-    replacements = [
-        (r"\\textbf\*?\{([^{}]*)\}", "**{}**"),
-        (r"\\(?:textit|emph|mkbibemph)\*?\{([^{}]*)\}", "*{}*"),
-        (r"\\(?:texttt|verb)\*?(?:\|([^|]*)\||\{([^{}]*)\})", "`{}`"),
-    ]
-    previous = None
-    while previous != text:
-        previous = text
-        for pattern, template in replacements:
-            text = re.sub(
-                pattern,
-                lambda m, template=template: template.format(
-                    normalize_text((m.group(1) or (m.group(2) if len(m.groups()) > 1 else "")), context)
-                ),
-                text,
-            )
-    return text
-
-
-def replace_citations(text: str) -> str:
-    cite_pattern = re.compile(r"\\(?:parencite|cite|textcite|autocite)(?:\[[^]]*\]){0,2}\{([^{}]+)\}")
-    return cite_pattern.sub(lambda m: format_citation(m.group(1)), text)
-
-
-def format_citation(keys: str) -> str:
-    citations = []
-    for key in keys.split(","):
-        key = key.strip()
-        year_match = re.search(r"((?:19|20)\d{2})", key)
-        year = year_match.group(1) if year_match else "n.d."
-        prefix = key[: year_match.start()] if year_match else key
-        surname_bits = re.match(r"[a-z\-]+", prefix)
-        surname = surname_bits.group(0) if surname_bits else prefix
-        surname = "-".join(bit.capitalize() for bit in surname.split("-") if bit)
-        if surname == "Muller":
-            surname = "Müller"
-        citations.append(f"{surname} {year}")
-    return "(" + "; ".join(citations) + ")"
-
-
-def replace_math(text: str) -> str:
-    text = re.sub(r"\$\$(.*?)\$\$", lambda m: normalize_math(m.group(1)), text, flags=re.S)
-    text = re.sub(r"\$(.*?)\$", lambda m: normalize_math(m.group(1)), text, flags=re.S)
-    text = re.sub(r"\\\[(.*?)\\\]", lambda m: normalize_math(m.group(1)), text, flags=re.S)
-    text = re.sub(r"\\\((.*?)\\\)", lambda m: normalize_math(m.group(1)), text, flags=re.S)
-    return text
-
-
-def normalize_math(math: str) -> str:
-    math = strip_comments(math).strip()
-    math = replace_latex_fractions(math)
-    math = re.sub(r"\\mathrm\{([^{}]*)\}", r"\1", math)
-    math = re.sub(r"\\mathbb\{([^{}]*)\}", r"\1", math)
-    math = re.sub(r"\\mathcal\{([^{}]*)\}", r"\1", math)
-    math = re.sub(r"\\text\{([^{}]*)\}", r"\1", math)
-    math = re.sub(r"\\boldsymbol\{([^{}]*)\}", r"\1", math)
-    math = re.sub(r"\\bar\{([^{}])\}", lambda m: m.group(1) + "\u0304", math)
-    math = replace_math_commands(math)
-    math = re.sub(r"\\frac\{([^{}]+)\}\{([^{}]+)\}", lambda m: f"{normalize_math(m.group(1))}/{normalize_math(m.group(2))}", math)
-    math = re.sub(r"\\sqrt\{([^{}]+)\}", lambda m: f"√({normalize_math(m.group(1))})", math)
-    math = re.sub(r"\^\{([^{}]+)\}", lambda m: to_superscript(normalize_math(m.group(1))), math)
-    math = re.sub(r"_\{([^{}]+)\}", lambda m: to_subscript(normalize_math(m.group(1))), math)
-    math = re.sub(r"\^\\circ\b", "°", math)
-    math = re.sub(r"\^([A-Za-z0-9+\-=()])", lambda m: to_superscript(m.group(1)), math)
-    math = re.sub(r"_([A-Za-z0-9+\-=()])", lambda m: to_subscript(m.group(1)), math)
-    math = re.sub(r"\\begin\{cases\}(.*?)\\end\{cases\}", lambda m: normalize_cases(m.group(1)), math, flags=re.S)
-    math = re.sub(r"\\begin\{bmatrix\}(.*?)\\end\{bmatrix\}", lambda m: "[" + normalize_math(m.group(1)) + "]", math, flags=re.S)
-    math = math.replace(r"\left", "").replace(r"\right", "")
-    math = math.replace(r"\!", "")
-    math = re.sub(r"\\(?:,|;|:| )", " ", math)
-    math = replace_math_commands(math)
-    math = re.sub(r"\\binom\{([^{}]+)\}\{([^{}]+)\}", r"C(\1,\2)", math)
-    math = math.replace(r"\mbox{-}", "-")
-    math = math.replace(r"\prime", "′")
-    math = math.replace(r"\{", "{").replace(r"\}", "}")
-    math = math.replace("\\", "")
-    math = math.replace("{", "").replace("}", "")
-    math = math.replace("---", "—").replace("--", "–")
-    math = re.sub(r"\s*&\s*", " ", math)
-    math = re.sub(r"\s+", " ", math)
-    return math.strip()
-
-
-def replace_math_commands(math: str) -> str:
-    replacements = {**GREEK, **SYMBOLS}
-    replacements.update({"vee": "∨", "dots": "…", "ldots": "…", "vdots": "⋮", "mapsto": "↦", "mid": "|"})
-    for name, value in sorted(replacements.items(), key=lambda item: -len(item[0])):
-        math = re.sub(rf"\\{re.escape(name)}(?=[^A-Za-z]|$)", value, math)
-    return math
-
-
-def normalize_cases(text: str) -> str:
-    rows = []
-    for row in split_latex_rows(text):
-        cells = [normalize_math(cell) for cell in split_latex_cells(row)]
-        rows.append(" if ".join(cell for cell in cells if cell))
-    return "{ " + "; ".join(rows) + " }"
-
-
-def replace_latex_fractions(text: str) -> str:
-    command = r"\frac"
-    start = text.find(command)
-    while start != -1:
-        first_start = start + len(command)
-        first = read_braced_at(text, first_start)
-        if not first:
-            start = text.find(command, start + len(command))
+def split_on_cs(tokens: list[Tok], name: str) -> list[list[Tok]]:
+    parts: list[list[Tok]] = [[]]
+    for tok in tokens:
+        if tok.kind == "cs" and tok.value == name:
+            parts.append([])
             continue
-        numerator, first_end = first
-        second = read_braced_at(text, first_end)
-        if not second:
-            start = text.find(command, start + len(command))
-            continue
-        denominator, second_end = second
-        replacement = f"({normalize_math(numerator)})/({normalize_math(denominator)})"
-        text = text[:start] + replacement + text[second_end:]
-        start = text.find(command, start + len(replacement))
-    return text
+        parts[-1].append(tok)
+    return parts
 
 
-def read_braced_at(text: str, index: int) -> tuple[str, int] | None:
-    while index < len(text) and text[index].isspace():
-        index += 1
-    if index >= len(text) or text[index] != "{":
-        return None
-    depth = 0
-    for pos in range(index, len(text)):
-        if text[pos] == "{" and (pos == 0 or text[pos - 1] != "\\"):
-            depth += 1
-        elif text[pos] == "}" and (pos == 0 or text[pos - 1] != "\\"):
-            depth -= 1
-            if depth == 0:
-                return text[index + 1 : pos], pos + 1
+def parse_column_spec(tokens: list[Tok]) -> tuple[list[str], set[int]]:
+    """Return per-column alignments and the column indices with a vertical rule on their left."""
+    columns: list[str] = []
+    vrules: set[int] = set()
+    stream = TokenStream(list(tokens))
+    while not stream.at_end():
+        tok = stream.next()
+        if tok.kind == "char":
+            ch = tok.value
+            if ch in "lcr":
+                columns.append({"l": "left", "c": "center", "r": "right"}[ch])
+            elif ch in "pmbXL" or ch in "CRJ":
+                if ch in "pmb":
+                    stream.read_arg()
+                columns.append({"C": "center", "R": "right"}.get(ch, "left"))
+            elif ch == "|":
+                vrules.add(len(columns))
+            elif ch in "@!<>":
+                stream.read_arg()
+            elif ch == "*":
+                try:
+                    count = int(group_text(stream.read_arg()))
+                except ValueError:
+                    count = 1
+                inner = stream.read_arg()
+                sub_cols, sub_rules = parse_column_spec(inner)
+                for _ in range(count):
+                    offset = len(columns)
+                    vrules.update(offset + r for r in sub_rules)
+                    columns.extend(sub_cols)
+        elif tok.kind == "bgroup":
+            pass
+    return columns, vrules
+
+
+def find_tabular(tokens: list[Tok]):
+    stream = TokenStream(list(tokens))
+    while not stream.at_end():
+        start = stream.pos
+        tok = stream.next()
+        if tok.kind == "cs" and tok.value == "begin":
+            name = group_text(stream.read_arg())
+            if name.rstrip("*") in ("tabular", "tabularx", "tabulary", "longtable", "tabu", "array"):
+                body = stream.read_environment_body(name)
+                return name, body, start
     return None
 
 
-def to_superscript(value: str) -> str:
-    return value.translate(SUPERSCRIPT)
+# ---------------------------------------------------------------------- driver
 
 
-def to_subscript(value: str) -> str:
-    return "".join(SUBSCRIPT_MAP.get(char, char) for char in value)
+def split_document(source: str) -> tuple[str, str]:
+    match = re.search(r"\\begin\{document\}", source)
+    if not match:
+        return "", source
+    end = source.find("\\end{document}", match.end())
+    return source[: match.start()], source[match.end() : end if end != -1 else None]
 
 
-def unwrap_text_commands(text: str, context: ParseContext) -> str:
-    command_pattern = re.compile(
-        r"\\(?:mathbf|mathit|mathbb|operatorname|underline)\*?(?:\|([^|]*)\||\{([^{}]*)\})"
-    )
-    previous = None
-    while previous != text:
-        previous = text
-        text = command_pattern.sub(lambda m: normalize_text(m.group(1) or m.group(2) or "", context), text)
-    return text
+def parse_document(tex_path: Path) -> tuple[Document, ConversionContext, str]:
+    tex_path = tex_path.resolve()
+    source = flatten_tex(tex_path)
+    preamble, body = split_document(source)
+    preamble_tokens = tokenize(preamble, at_letter=True)
+    macros = parse_macro_definitions(preamble_tokens)
+    config: BibConfig | None = config_from_preamble(preamble, tex_path.parent)
+    body_tokens = tokenize(body)
 
-
-def strip_comments(text: str) -> str:
-    return re.sub(r"(?<!\\)%.*", "", text)
-
-
-def remove_bibliography(text: str) -> str:
-    text = re.sub(r"\\printbibliography\b(?:\[[^]]*\])?", "", text)
-    text = re.sub(r"\\addbibresource\{[^{}]*\}", "", text)
-    text = re.sub(r"\\begin\{thebibliography\}.*?\\end\{thebibliography\}", "", text, flags=re.S)
-    return text
-
-
-def remove_wrappers(text: str) -> str:
-    text = re.sub(r"\\begingroup|\\endgroup", "\n", text)
-    text = re.sub(r"\\(?:emergencystretch|hfuzz)\s*=\s*[^ \n]+", "", text)
-    return text
-
-
-def collect_label_map(text: str) -> dict[str, str]:
     labels: dict[str, str] = {}
-    counts = {"figure": 0, "table": 0}
-    pattern = re.compile(r"\\begin\{(figure|table)\}(?:\[[^]]*\])?(.*?)\\end\{\1\}", flags=re.S)
-    for match in pattern.finditer(text):
-        kind = match.group(1)
-        counts[kind] += 1
-        label = extract_braced_command(match.group(2), "label")
-        if label:
-            labels[label] = str(counts[kind])
-    return labels
+    bibliography: Bibliography | None = None
+    ctx = None
+    blocks: list = []
+    for final in (False, True):
+        ctx = ConversionContext(dict(macros), bibliography, labels)
+        ctx.final_pass = final
+        if config is not None and bibliography is None:
+            renderer_walker = Walker(ctx)
+            bibliography = Bibliography.load(config, renderer_walker.render_string)
+            ctx.bibliography = bibliography
+        elif bibliography is not None:
+            renderer_walker = Walker(ctx)
+            bibliography.render = renderer_walker.render_string
+            bibliography._prepared = False
+        # Title metadata may be defined in the preamble.
+        walker = Walker(ctx)
+        _collect_metadata(preamble_tokens, ctx)
+        blocks = walker.walk(list(body_tokens))
+        labels = ctx.new_labels
+    headings = [b for b in blocks if isinstance(b, Heading)]
+    raw_preamble, _ = split_document(tex_path.read_text(encoding="utf-8"))
+    return Document(blocks, headings), ctx, raw_preamble
 
 
-def find_environment_end(text: str, env: str, start: int) -> re.Match[str] | None:
-    return re.compile(rf"\\end\{{{re.escape(env)}\}}", flags=re.S).search(text, start)
+def _collect_metadata(tokens: list[Tok], ctx: ConversionContext) -> None:
+    stream = TokenStream(list(tokens))
+    while not stream.at_end():
+        tok = stream.next()
+        if tok.kind == "cs" and tok.value in ("title", "author", "date"):
+            stream.read_optional()
+            setattr(ctx.metadata, tok.value, stream.read_arg())
 
 
-def extract_environment(text: str, env: str) -> str | None:
-    match = re.search(rf"\\begin\{{{re.escape(env)}\}}(.*?)\\end\{{{re.escape(env)}\}}", text, flags=re.S)
-    return match.group(1) if match else None
+def convert_file(
+    tex_path: Path,
+    docx_path: Path,
+    markdown_path: Path | None = None,
+    figures: bool = True,
+    dpi: int = 400,
+    latex_engine: str | None = None,
+) -> None:
+    from .docx_writer import write_docx
+    from .figures import render_figures
+    from .markdown import render_markdown
 
-
-def extract_braced_command(text: str, command: str) -> str | None:
-    start = re.search(rf"\\{re.escape(command)}(?:\[[^]]*\])?\{{", text)
-    if not start:
-        return None
-    brace_start = start.end() - 1
-    depth = 0
-    for idx in range(brace_start, len(text)):
-        if text[idx] == "{" and (idx == 0 or text[idx - 1] != "\\"):
-            depth += 1
-        elif text[idx] == "}" and (idx == 0 or text[idx - 1] != "\\"):
-            depth -= 1
-            if depth == 0:
-                return text[brace_start + 1 : idx]
-    return None
-
-
-def write_docx(blocks: Iterable[Block], metadata: Metadata, path: Path) -> None:
-    document = Document()
-    styles = document.styles
-    styles["Normal"].font.name = "Times New Roman"
-    styles["Normal"].font.size = Pt(11)
-    if metadata.title:
-        paragraph = document.add_heading(metadata.title, level=0)
-        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    if metadata.authors:
-        paragraph = document.add_paragraph(", ".join(metadata.authors))
-        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    if metadata.date:
-        paragraph = document.add_paragraph(metadata.date)
-        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-
-    for block in blocks:
-        if block.kind == "heading":
-            document.add_heading(block.text, level=min(max(block.level, 1), 4))
-        elif block.kind == "paragraph":
-            add_formatted_paragraph(document, block.text)
-        elif block.kind == "equation":
-            paragraph = document.add_paragraph(block.text)
-            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        elif block.kind == "figure":
-            paragraph = document.add_paragraph(block.text)
-            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            if block.caption:
-                add_formatted_paragraph(document, f"Figure {block.number}: {block.caption}")
-        elif block.kind == "table":
-            add_docx_table(document, block)
-    document.save(path)
-
-
-def add_docx_table(document: Document, block: Block) -> None:
-    rows = block.rows
-    if not rows:
-        if block.caption:
-            add_formatted_paragraph(document, f"Table {block.number}: {block.caption}")
-        return
-    column_count = max(len(row) for row in rows)
-    table = document.add_table(rows=len(rows), cols=column_count)
-    table.style = "Table Grid"
-    for row_index, row in enumerate(rows):
-        for col_index in range(column_count):
-            table.cell(row_index, col_index).text = row[col_index] if col_index < len(row) else ""
-    if block.caption:
-        add_formatted_paragraph(document, f"Table {block.number}: {block.caption}")
-
-
-def add_formatted_paragraph(document: Document, text: str):
-    paragraph = document.add_paragraph()
-    add_formatted_runs(paragraph, text)
-    return paragraph
-
-
-def add_formatted_runs(paragraph, text: str) -> None:
-    token_pattern = re.compile(r"(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)")
-    pos = 0
-    for match in token_pattern.finditer(text):
-        if match.start() > pos:
-            paragraph.add_run(text[pos : match.start()])
-        token = match.group(0)
-        if token.startswith("**"):
-            run = paragraph.add_run(token[2:-2])
-            run.bold = True
-        elif token.startswith("*"):
-            run = paragraph.add_run(token[1:-1])
-            run.italic = True
-        else:
-            run = paragraph.add_run(token[1:-1])
-            run.font.name = "Courier New"
-        pos = match.end()
-    if pos < len(text):
-        paragraph.add_run(text[pos:])
-
-
-def render_markdown(blocks: Iterable[Block], metadata: Metadata) -> str:
-    lines: list[str] = []
-    if metadata.title:
-        lines.extend([f"# {metadata.title}", ""])
-    if metadata.authors:
-        lines.extend([", ".join(metadata.authors), ""])
-    for block in blocks:
-        if block.kind == "heading":
-            lines.extend([f"{'#' * min(block.level + 1, 6)} {block.text}", ""])
-        elif block.kind == "paragraph":
-            lines.extend([block.text, ""])
-        elif block.kind == "equation":
-            lines.extend([f"```text\n{block.text}\n```", ""])
-        elif block.kind == "figure":
-            lines.extend([block.text, ""])
-            if block.caption:
-                lines.extend([f"Figure {block.number}: {block.caption}", ""])
-        elif block.kind == "table":
-            lines.extend(render_markdown_table(block.rows))
-            if block.caption:
-                lines.extend(["", f"Table {block.number}: {block.caption}", ""])
-    return "\n".join(lines).rstrip() + "\n"
-
-
-def render_markdown_table(rows: list[list[str]]) -> list[str]:
-    if not rows:
-        return []
-    width = max(len(row) for row in rows)
-    padded = [row + [""] * (width - len(row)) for row in rows]
-    lines = ["| " + " | ".join(padded[0]) + " |"]
-    lines.append("| " + " | ".join("---" for _ in range(width)) + " |")
-    for row in padded[1:]:
-        lines.append("| " + " | ".join(row) + " |")
-    return lines
+    tex_path = Path(tex_path).resolve()
+    docx_path = Path(docx_path).resolve()
+    document, ctx, preamble = parse_document(tex_path)
+    figure_blocks = [b for b in document.blocks if isinstance(b, Figure)]
+    with render_figures(figure_blocks, preamble, tex_path.parent, enabled=figures, dpi=dpi, engine=latex_engine):
+        docx_path.parent.mkdir(parents=True, exist_ok=True)
+        write_docx(document, docx_path)
+    if markdown_path:
+        markdown_path = Path(markdown_path).resolve()
+        markdown_path.parent.mkdir(parents=True, exist_ok=True)
+        markdown_path.write_text(render_markdown(document), encoding="utf-8")
