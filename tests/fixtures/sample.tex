@@ -1,0 +1,45 @@
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage[style=authoryear,maxcitenames=2]{biblatex}
+\addbibresource{sample.bib}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\term}[1]{\emph{#1}}
+\title{A Small Test}
+\author{Ann Author \and Bob B\"ohm}
+\date{1 January 2020}
+\begin{document}
+\maketitle
+\section{Intro}\label{sec:intro}
+Some \term{emphasised} text with \textbf{bold \emph{and italic}}, a \url{https://example.org},
+``quotes'', dashes -- and --- and an accent: Stra\ss e, Caf\'e.
+As \textcite{doe2020} showed, and see \parencite[see][p.~4]{doe2020,roe2019}.
+Footnote here\footnote{A note.}. A formula $x \in \R^n$ and $\frac{a}{b}$.
+\begin{itemize}
+  \item First item
+  \item Second item with $y_i^2$
+\end{itemize}
+\begin{enumerate}
+  \item One
+  \item Two
+\end{enumerate}
+\begin{align}
+  a &= b + c \label{eq:a}\\
+  d &= e \nonumber
+\end{align}
+Equation~\eqref{eq:a} in Section~\ref{sec:intro}. \unknowncommand{kept text}
+\begin{table}
+  \caption{Caption above.}\label{tab:x}
+  \begin{tabular}{|l|c|}
+    \hline
+    \multicolumn{2}{|c|}{Header} \\ \hline
+    a & b \\
+    \hline
+  \end{tabular}
+\end{table}
+\begin{verbatim}
+raw  \text{kept}  % not a comment
+\end{verbatim}
+Table~\ref{tab:x}.
+\printbibliography
+\end{document}

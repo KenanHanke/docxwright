@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "docxwright"
-version = "1.0.1"
+version = "2.0.0"
 description = "A pragmatic LaTeX-to-DOCX converter for editable scientific manuscripts."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,6 +12,9 @@ dependencies = ["python-docx>=1.1.0"]
 authors = [{ name = "Kenan Hanke" }]
 license = "AGPL-3.0-or-later"
 license-files = ["LICENSE", "THIRD_PARTY_LICENSES/*"]
+
+[project.optional-dependencies]
+test = ["pytest"]
 
 [project.scripts]
 docxwright = "docxwright.cli:main"
