@@ -100,15 +100,21 @@ def test_figures_rendered_on_own_page(tmp_path):
     convert_file(tex, out)
     with zipfile.ZipFile(out) as archive:
         names = archive.namelist()
-        xml = archive.read("word/document.xml").decode()
     assert any(name.startswith("word/media/") and name.endswith(".png") for name in names)
-    # page break right after the preceding text, caption below the image, page break after the caption
-    before = xml.index("Text before.")
-    drawing = xml.index("<w:drawing>")
-    caption = xml.index("A circle.")
-    after = xml.index("Text after.")
-    assert before < xml.index('w:type="page"', before) < drawing < caption < after
-    assert xml.index('w:type="page"', caption) < after
+    document = docx.Document(str(out))
+    paragraphs = [p for p in document.element.body if p.tag.endswith("}p")]
+    texts = ["".join(t.text or "" for t in p.iter(qn("w:t"))) for p in paragraphs]
+    picture = next(i for i, p in enumerate(paragraphs) if p.find(".//" + qn("w:drawing")) is not None)
+    # the figure starts a new page right after the preceding text, the caption sits below it,
+    # and the following text starts a new page again
+    assert texts[picture - 1] == "Text before." and page_break_before(paragraphs[picture])
+    assert texts[picture + 1] == "Figure 1: A circle."
+    assert texts[picture + 2] == "Text after." and page_break_before(paragraphs[picture + 2])
+
+
+def page_break_before(p) -> bool:
+    ppr = p.find(qn("w:pPr"))
+    return ppr is not None and ppr.find(qn("w:pageBreakBefore")) is not None
 
 
 @pytest.mark.skipif(shutil.which("pdflatex") is None, reason="LaTeX not installed")
@@ -124,23 +130,18 @@ def test_consecutive_figures_single_break_outside_caption(tmp_path):
     body = document.element.body
     paragraphs = [p for p in body if p.tag.endswith("}p")]
 
-    def has_break(p):
-        return any(br.get(qn("w:type")) == "page" for br in p.iter(qn("w:br")))
-
     def text(p):
         return "".join(t.text or "" for t in p.iter(qn("w:t")))
 
-    # Page breaks live in paragraphs of their own, never inside text or captions.
-    for p in paragraphs:
-        if has_break(p):
-            assert text(p) == ""
+    # No paragraphs that only hold a manual page break (they cause empty pages in some
+    # viewers); figures start new pages through "page break before".
+    assert not any(br.get(qn("w:type")) == "page" for p in paragraphs for br in p.iter(qn("w:br")))
     kinds = []
     for p in paragraphs:
-        if has_break(p):
-            kinds.append("break")
-        elif p.find(".//" + qn("w:drawing")) is not None:
-            kinds.append("figure")
+        prefix = "|" if page_break_before(p) else ""
+        if p.find(".//" + qn("w:drawing")) is not None:
+            kinds.append(prefix + "figure")
         elif text(p):
-            kinds.append(text(p))
-    assert kinds == ["Text before.", "break", "figure", "Figure 1: Caption one.", "break", "figure",
-                     "Figure 2: Caption two.", "break", "Text after."]
+            kinds.append(prefix + text(p))
+    assert kinds == ["Text before.", "|figure", "Figure 1: Caption one.", "|figure",
+                     "Figure 2: Caption two.", "|Text after."]

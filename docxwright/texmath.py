@@ -47,6 +47,27 @@ SYMBOLS: dict[str, tuple[str, str]] = {
     "rbrace": ("}", "close"), "lvert": ("|", "open"), "rvert": ("|", "close"),
     "lVert": ("‖", "open"), "rVert": ("‖", "close"), "lfloor": ("⌊", "open"),
     "rfloor": ("⌋", "close"), "lceil": ("⌈", "open"), "rceil": ("⌉", "close"),
+    "uparrow": ("↑", "rel"), "downarrow": ("↓", "rel"), "Uparrow": ("⇑", "rel"), "Downarrow": ("⇓", "rel"),
+    "updownarrow": ("↕", "rel"), "nearrow": ("↗", "rel"), "searrow": ("↘", "rel"), "nwarrow": ("↖", "rel"),
+    "swarrow": ("↙", "rel"), "hookrightarrow": ("↪", "rel"), "longmapsto": ("⟼", "rel"),
+    "Longrightarrow": ("⟹", "rel"), "longleftarrow": ("⟵", "rel"), "Longleftarrow": ("⟸", "rel"),
+    "longleftrightarrow": ("⟷", "rel"), "Longleftrightarrow": ("⟺", "rel"), "rightleftharpoons": ("⇌", "rel"),
+    "leqslant": ("⩽", "rel"), "geqslant": ("⩾", "rel"), "lesssim": ("≲", "rel"), "gtrsim": ("≳", "rel"),
+    "cong": ("≅", "rel"), "asymp": ("≍", "rel"), "doteq": ("≐", "rel"), "prec": ("≺", "rel"), "succ": ("≻", "rel"),
+    "preceq": ("⪯", "rel"), "succeq": ("⪰", "rel"), "models": ("⊨", "rel"), "vdash": ("⊢", "rel"),
+    "dashv": ("⊣", "rel"), "nmid": ("∤", "rel"), "nparallel": ("∦", "rel"), "nsubseteq": ("⊈", "rel"),
+    "subsetneq": ("⊊", "rel"), "supsetneq": ("⊋", "rel"), "approxeq": ("≊", "rel"), "thicksim": ("∼", "rel"),
+    "varpropto": ("∝", "rel"), "sqsubseteq": ("⊑", "rel"), "sqsupseteq": ("⊒", "rel"), "lt": ("<", "rel"),
+    "gt": (">", "rel"), "leftrightarrows": ("⇆", "rel"), "therefore": ("∴", "rel"), "because": ("∵", "rel"),
+    "dagger": ("†", "ord"), "ddagger": ("‡", "ord"), "bot": ("⊥", "ord"), "top": ("⊤", "ord"),
+    "Re": ("ℜ", "ord"), "Im": ("ℑ", "ord"), "wp": ("℘", "ord"), "complement": ("∁", "ord"),
+    "measuredangle": ("∡", "ord"), "sharp": ("♯", "ord"), "flat": ("♭", "ord"), "natural": ("♮", "ord"),
+    "blacksquare": ("■", "ord"), "Box": ("□", "ord"), "lozenge": ("◊", "ord"), "checkmark": ("✓", "ord"),
+    "diamond": ("⋄", "bin"), "uplus": ("⊎", "bin"), "sqcup": ("⊔", "bin"), "sqcap": ("⊓", "bin"),
+    "odot": ("⊙", "bin"), "ominus": ("⊖", "bin"), "oslash": ("⊘", "bin"), "wr": ("≀", "bin"),
+    "amalg": ("⨿", "bin"), "triangleleft": ("◁", "bin"), "triangleright": ("▷", "bin"), "lhd": ("⊲", "bin"),
+    "rhd": ("⊳", "bin"), "bigtriangleup": ("△", "bin"), "bigtriangledown": ("▽", "bin"), "cdotp": ("·", "punct"),
+    "ldotp": (".", "punct"), "smile": ("⌣", "rel"), "frown": ("⌢", "rel"), "bowtie": ("⋈", "rel"),
     "{": ("{", "open"), "}": ("}", "close"), "|": ("‖", "ord"), "vert": ("|", "ord"),
     "Vert": ("‖", "ord"), "colon": (":", "punct"), "%": ("%", "ord"), "#": ("#", "ord"),
     "&": ("&", "ord"), "$": ("$", "ord"), "_": ("_", "ord"), "backslash": ("∖", "ord"),
@@ -79,13 +100,24 @@ IGNORED = {"displaystyle", "textstyle", "scriptstyle", "scriptscriptstyle", "non
            "Bigl", "Bigr", "biggl", "biggr", "Biggl", "Biggr", "middle", "relax", "strut",
            "allowbreak", "nobreak"}
 
-DOUBLE_STRUCK = {"R": "ℝ", "N": "ℕ", "Z": "ℤ", "Q": "ℚ", "C": "ℂ", "P": "ℙ", "H": "ℍ"}
+DOUBLE_STRUCK = {**{chr(ord("A") + i): chr(0x1D538 + i) for i in range(26)},
+                 **{chr(ord("a") + i): chr(0x1D552 + i) for i in range(26)},
+                 **{chr(ord("0") + i): chr(0x1D7D8 + i) for i in range(10)},
+                 # letters that live in the Letterlike Symbols block
+                 "C": "ℂ", "H": "ℍ", "N": "ℕ", "P": "ℙ", "Q": "ℚ", "R": "ℝ", "Z": "ℤ"}
 SCRIPT = {"A": "𝒜", "B": "ℬ", "C": "𝒞", "D": "𝒟", "E": "ℰ", "F": "ℱ", "G": "𝒢", "H": "ℋ",
           "I": "ℐ", "J": "𝒥", "K": "𝒦", "L": "ℒ", "M": "ℳ", "N": "𝒩", "O": "𝒪", "P": "𝒫",
           "Q": "𝒬", "R": "ℛ", "S": "𝒮", "T": "𝒯", "U": "𝒰", "V": "𝒱", "W": "𝒲", "X": "𝒳",
           "Y": "𝒴", "Z": "𝒵"}
 
+FRAKTUR = {**{chr(ord("A") + i): chr(0x1D504 + i) for i in range(26)},
+           **{chr(ord("a") + i): chr(0x1D51E + i) for i in range(26)},
+           "C": "ℭ", "H": "ℌ", "I": "ℑ", "R": "ℜ", "Z": "ℨ"}
+
 BIN_CHARS = {"+": "+", "-": "−", "*": "∗"}
+FONT_SWITCHES = {"rm": ("p", None), "rmfamily": ("p", None), "upshape": ("p", None), "sf": ("p", None),
+                 "tt": ("p", None), "bf": ("b", None), "bfseries": ("b", None), "it": ("i", None),
+                 "itshape": ("i", None), "cal": ("p", SCRIPT)}
 REL_CHARS = {"=", "<", ">", ":"}
 OPEN_CHARS = {"(", "["}
 CLOSE_CHARS = {")", "]"}
@@ -100,6 +132,7 @@ class MRun:
     text: str
     style: str = "auto"  # auto (math italic letters), p (upright), b, bi, nor (text)
     cls: str = "ord"  # TeX atom class: ord, op, bin, rel, open, close, punct, inner
+    limits: bool = False  # operator name whose scripts go above/below in display (\operatorname*)
 
 
 @dataclass
@@ -196,6 +229,8 @@ class MathParser:
             if tok.kind in ("sup", "sub"):
                 s.next()
                 arg = self.parse_script_arg()
+                if items and all(isinstance(a, MSpace) or isinstance(a, MRun) and not a.text.strip() for a in arg):
+                    continue  # (an empty script - \widehat{\beta}^{\,}, a placeholder of a macro)
                 base = items.pop() if items else MRun("")
                 if isinstance(base, MNary):
                     if tok.kind == "sub":
@@ -212,6 +247,13 @@ class MathParser:
                     base.sup = arg
                 items.append(base)
                 continue
+            if tok.kind == "cs" and tok.value in FONT_SWITCHES:
+                # {\rm obs}: the old-style switch applies to the rest of the group.
+                s.next()
+                style, table = FONT_SWITCHES[tok.value]
+                rest = self.parse_seq(stop)
+                items.extend(remap(rest, table) if table else restyle(rest, style))
+                return self._finish(items)
             if tok.kind == "char" and tok.value == "'":
                 s.next()
                 primes = "′"
@@ -336,26 +378,59 @@ class MathParser:
             return None
         if name in ("big", "Big", "bigg", "Bigg", "bigl", "bigr", "Bigl", "Bigr", "biggl", "biggr", "Biggl", "Biggr", "middle"):
             ch = self.read_delimiter()
-            return MRun(ch, "p", "open" if name.endswith("l") else "close" if name.endswith("r") else "ord")
+            if name.endswith("l") or (not name.endswith("r") and ch in "([{⟨⌊⌈"):
+                cls = "open"  # \big( ... \big) pair up like ordinary brackets
+            elif name.endswith("r") or ch in ")]}⟩⌋⌉":
+                cls = "close"
+            else:
+                cls = "ord"
+            return MRun(ch, "p", cls)
         if name in ACCENTS:
             body = self.parse_arg()
             return MAcc(ACCENTS[name], body)
-        if name in ("mathrm", "textrm", "mathup", "operatorname", "mathsf", "mathtt", "textup"):
-            body = self.parse_arg()
-            return MGroup(restyle(body, "p", op=name == "operatorname"))
-        if name in ("mathbf", "textbf"):
+        if name in ("mathrm", "mathup", "operatorname", "mathsf", "mathtt"):
+            star = name == "operatorname" and s.read_star()
+            body = restyle(self.parse_arg(), "p", op=name == "operatorname")
+            if name == "operatorname" and body and all(
+                    isinstance(b, MSpace) or isinstance(b, MRun) and b.text.isalpha() for b in body):
+                # A function name like \sin (\operatorname{tr} A, \operatorname*{arg\,max}_x).
+                return MRun("".join(b.text for b in body), "p", "op", limits=bool(star))
+            return MGroup(body)
+        if name in ("textbf", "textit", "textsl", "emph"):
+            # Text in math: upright (or italic) words with their spaces, bold or italic.
+            raw = s.read_arg()
+            text = text_of(raw, self.text_renderer)
+            if raw and raw[0].kind in ("space", "tilde") and not text.startswith(" "):
+                text = " " + text
+            if raw and raw[-1].kind in ("space", "tilde") and not text.endswith(" "):
+                text = text + " "
+            return MRun(text, "norb" if name == "textbf" else "nori")
+        if name == "mathbf":
             return MGroup(restyle(self.parse_arg(), "b"))
         if name in ("boldsymbol", "bm", "pmb"):
             return MGroup(restyle(self.parse_arg(), "bi"))
-        if name in ("mathit", "textit"):
+        if name == "mathit":
             return MGroup(restyle(self.parse_arg(), "i"))
         if name == "mathbb":
             return MGroup(remap(self.parse_arg(), DOUBLE_STRUCK))
         if name in ("mathcal", "mathscr"):
             return MGroup(remap(self.parse_arg(), SCRIPT))
-        if name in ("text", "mbox", "textnormal", "hbox", "textsf", "texttt", "textmd"):
+        if name in ("mathfrak", "frak"):
+            return MGroup(remap(self.parse_arg(), FRAKTUR))
+        if name == "ensuremath":
+            return MGroup(self.parse_arg())
+        if name == "substack":
+            # Several lines under a sum: a one-column matrix.
+            return MMatrix(parse_rows(s.read_arg(), self.text_renderer), "c")
+        if name in ("text", "mbox", "textnormal", "hbox", "textsf", "texttt", "textmd", "textrm", "textup", "textsc"):
             raw = s.read_arg()
-            return MRun(text_of(raw, self.text_renderer), "nor")
+            text = text_of(raw, self.text_renderer)
+            # Spaces at the edges of \text{ if } are significant (the renderer trims them).
+            if raw and raw[0].kind in ("space", "tilde") and not text.startswith(" "):
+                text = " " + text
+            if raw and raw[-1].kind in ("space", "tilde") and not text.endswith(" "):
+                text = text + " "
+            return MRun(text, "nor")
         if name in ("underbrace", "overbrace", "underline", "phantom", "hphantom", "vphantom", "boxed"):
             body = self.parse_arg()
             if name.endswith("phantom"):
@@ -365,6 +440,29 @@ class MathParser:
             top = self.parse_arg()
             base = self.parse_arg()
             return MScript(MGroup(base), sup=top) if name != "underset" else MScript(MGroup(base), sub=top)
+        if name in ("SI", "qty", "si", "unit", "num", "ang", "qtyrange", "SIrange", "numrange", "qtylist", "SIlist",
+                    "numlist"):
+            return self.siunitx(name)
+        if name in ("ce", "cee", "cf"):
+            from .chem import ce_pieces
+
+            nodes: list = []
+            for text, vert in ce_pieces(_raw(self.stream.read_arg())):
+                # Normal text: chemical formulas are upright (LibreOffice ignores the upright
+                # math style of letters in mixed runs such as " + H").
+                run = MRun(text, "nor")
+                if vert and nodes:
+                    base = nodes.pop()
+                    if isinstance(base, MScript) and (base.sup if vert == "sub" else base.sub) is not None \
+                            and (base.sub if vert == "sub" else base.sup) is None:
+                        base = MScript(base.base, sub=[run] if vert == "sub" else base.sub,
+                                       sup=[run] if vert == "super" else base.sup)
+                    else:
+                        base = MScript(base, sub=[run] if vert == "sub" else None, sup=[run] if vert == "super" else None)
+                    nodes.append(base)
+                else:
+                    nodes.append(run)
+            return MGroup(nodes)
         if name == "begin":
             env = group_text(s.read_arg())
             return self.parse_environment(env)
@@ -380,6 +478,59 @@ class MathParser:
             return MSpace(" ")
         warnings.warn(f"unsupported math command \\{name}", stacklevel=2)
         return MRun(name, "p")
+
+    def siunitx(self, name: str):
+        from . import siunitx as si
+
+        s = self.stream
+        settings = si.with_options(s.read_optional())
+        pieces: list = []
+        if name in ("SI", "qty"):
+            number = s.read_arg()
+            s.read_optional()
+            unit = si.format_unit(s.read_arg(), settings)
+            pieces = si.format_number(_raw(number), settings)
+            if unit:
+                pieces = si.bracket_uncertain(pieces)  # (2.5 ± 0.1) m
+            if pieces and unit and unit[0] == ("1", None) and len(unit) > 1 and unit[1][0] == "/":
+                unit = unit[1:]  # per-mode=symbol after a number: "2.4 × 10⁴ /M"
+            if pieces and unit and not si.unit_is_attached(unit):
+                pieces.append((settings.number_unit, None))
+            pieces += unit
+        elif name in ("si", "unit"):
+            pieces = si.format_unit(s.read_arg(), settings)
+        elif name == "num":
+            pieces = si.format_number(_raw(s.read_arg()), settings)
+        elif name in ("qtyrange", "SIrange", "numrange"):
+            first, second = _raw(s.read_arg()), _raw(s.read_arg())
+            unit = si.format_unit(s.read_arg(), settings) if name != "numrange" else []
+            gap = [(settings.number_unit, None)] if unit and not si.unit_is_attached(unit) else []
+            single = settings.range_units in ("single", "brackets") and unit
+            pieces = (si.format_number(first, settings) + ([] if single else gap + unit)
+                      + [(settings.range_phrase, None)] + si.format_number(second, settings) + gap + unit)
+            if settings.range_units == "brackets" and unit:
+                pieces = [("(", None)] + pieces[:-len(unit) - len(gap)] + [(")", None)] + gap + unit
+        elif name in ("qtylist", "SIlist", "numlist"):
+            values = [v for v in _raw(s.read_arg()).split(";")]
+            unit = si.format_unit(s.read_arg(), settings) if name != "numlist" else []
+            gap = [(settings.number_unit, None)] if unit and not si.unit_is_attached(unit) else []
+            for index, value in enumerate(values):
+                if index:
+                    pieces.append((settings.list_separator if index < len(values) - 1 else
+                                   settings.list_pair_separator if len(values) == 2 else
+                                   settings.list_final_separator, None))
+                last = index == len(values) - 1
+                pieces += si.format_number(value, settings) + (
+                    gap + unit if last or settings.list_units not in ("single", "brackets") else [])
+        else:
+            pieces = [(_raw(s.read_arg()).replace(";", "") + "°", None)]
+        nodes: list = []
+        for text, vert in pieces:
+            if vert == "super" and nodes and isinstance(nodes[-1], MRun):
+                nodes[-1] = MScript(nodes[-1], sup=[MRun(text, "p")])
+            elif text:
+                nodes.append(MRun(text, "p"))
+        return MGroup(nodes)
 
     def read_delimiter(self) -> str:
         s = self.stream
@@ -409,6 +560,9 @@ class MathParser:
             align = "c"
         rows = parse_rows(body_tokens, self.text_renderer)
         if base == "cases":
+            # LaTeX separates value and condition by a \quad.
+            rows = [[cell if index == 0 else [MSpace("\u2003")] + list(cell) for index, cell in enumerate(row)]
+                    for row in rows]
             return MDelim("{", "", [MMatrix(rows, "l")])
         if base in ("aligned", "split", "alignedat"):
             return MMatrix(rows, "rl")
@@ -420,6 +574,18 @@ class MathParser:
         if base in delims:
             return MDelim(*delims[base], [matrix])
         return matrix
+
+
+def _raw(tokens: list[Tok]) -> str:
+    out = []
+    for tok in tokens:
+        if tok.kind == "cs":
+            out.append("\\" + tok.value)
+        elif tok.kind in ("space", "tilde"):
+            out.append(" ")
+        elif tok.kind not in ("bgroup", "egroup"):
+            out.append(tok.value)
+    return "".join(out).strip()
 
 
 def parse_rows(tokens: list[Tok], text_renderer=None) -> list:
@@ -474,7 +640,7 @@ def restyle(items: list, style: str, op: bool = False) -> list:
     out = []
     for item in items:
         if isinstance(item, MRun):
-            if item.style != "nor":
+            if item.style not in ("nor", "norb", "nori"):
                 item = MRun(item.text, style, "op" if op else item.cls)
         elif isinstance(item, MGroup):
             item = MGroup(restyle(item.items, style, op))
@@ -490,7 +656,30 @@ def restyle(items: list, style: str, op: bool = False) -> list:
             else:
                 merged.append(item)
         out = merged
+    elif style == "p":
+        # Adjacent upright letters form a word (\mathrm{sim}); \mathrm{Cu^{2+}} scripts the whole word.
+        merged = []
+        for item in out:
+            if (merged and isinstance(item, MRun) and isinstance(merged[-1], MRun) and item.style == "p"
+                    and merged[-1].style == "p" and item.text.isalpha() and merged[-1].text.isalpha()):
+                merged[-1] = MRun(merged[-1].text + item.text, "p", merged[-1].cls)
+            elif (merged and isinstance(item, MScript) and isinstance(merged[-1], MRun) and merged[-1].style == "p"
+                  and merged[-1].text.isalpha() and _upright_letters(item.base)):
+                word = MRun(merged[-1].text + _upright_letters(item.base).text, "p", merged[-1].cls)
+                merged[-1] = MScript(MGroup([word]), item.sub, item.sup)
+            else:
+                merged.append(item)
+        out = merged
     return out
+
+
+def _upright_letters(node):
+    """The upright letter run that NODE (a script base) consists of, if any."""
+    while isinstance(node, MGroup) and len(node.items) == 1:
+        node = node.items[0]
+    if isinstance(node, MRun) and node.style == "p" and node.text.isalpha():
+        return node
+    return None
 
 
 def remap(items: list, table: dict[str, str]) -> list:
@@ -530,11 +719,19 @@ def attach_nary_bodies(items: list) -> list:
         if isinstance(item, MNary) and not item.body:
             body = []
             j = idx + 1
+            depth = 0  # brackets opened inside the body must also close inside it
             while j < len(items):
                 nxt = items[j]
-                if isinstance(nxt, MRun) and nxt.cls in ("rel", "punct"):
+                base = nxt.base if isinstance(nxt, MScript) else nxt
+                if isinstance(base, MRun) and base.cls == "open":
+                    depth += 1
+                elif isinstance(base, MRun) and base.cls == "close":
+                    if depth == 0:
+                        break
+                    depth -= 1
+                elif depth == 0 and isinstance(nxt, MRun) and nxt.cls in ("rel", "punct"):
                     break
-                if isinstance(nxt, MSpace) and nxt.text.startswith(" "):
+                elif depth == 0 and isinstance(nxt, MSpace) and nxt.text.startswith("\u2003"):
                     break
                 body.append(nxt)
                 j += 1
@@ -570,13 +767,148 @@ def _run_xml(text: str, style: str) -> str:
         rpr = '<m:rPr><m:sty m:val="bi"/></m:rPr>'
     elif style == "i":
         rpr = '<m:rPr><m:sty m:val="i"/></m:rPr>'
-    elif style == "nor":
+    elif style in ("nor", "norb", "nori"):
         rpr = '<m:rPr><m:nor/></m:rPr>'
-    font = "" if style == "nor" else '<w:rPr><w:rFonts w:ascii="Cambria Math" w:hAnsi="Cambria Math"/></w:rPr>'
+    # Normal text uses the text font, except for symbols only the math font has (Greek, 𝔼, ℝ).
+    emphasis = {"norb": "<w:b/>", "nori": "<w:i/>"}.get(style, "")
+    fonts = "" if style in ("nor", "norb", "nori") and text.isascii() else \
+        '<w:rFonts w:ascii="Cambria Math" w:hAnsi="Cambria Math"/>'
+    font = f"<w:rPr>{fonts}{emphasis}</w:rPr>" if fonts or emphasis else ""
     return f'<m:r>{rpr}{font}<m:t xml:space="preserve">{escape(text)}</m:t></m:r>'
 
 
+# n-ary operators that LibreOffice's equation import understands; others (⋃, ⋂, ⋁, ...) are
+# written as an operator symbol with limits, which renders correctly in Word and LibreOffice.
+NATIVE_NARY = set("∑∏∐∫∬∭∮")
+DELIMITER_PAIRS = {"(": ")", "[": "]", "{": "}", "⟨": "⟩", "⌊": "⌋", "⌈": "⌉"}
+
+
+def group_delimiters(items: list) -> list:
+    """Turn balanced bracket pairs into delimiter objects (as Word itself does).
+
+    ``(p_1-p_2)^2`` becomes a parenthesized group with a superscript instead of a superscript
+    on a lone ")" (which breaks LibreOffice's equation import), and brackets stretch around
+    fractions. Lone vertical bars are written as "∣" for the same reason.
+    """
+    out: list = []
+    stack: list[tuple[int, str]] = []
+    for item in items:
+        base = item.base if isinstance(item, MScript) else item
+        ch = base.text if isinstance(base, MRun) and len(base.text) == 1 else None
+        scripted = isinstance(item, MScript)
+        if ch in DELIMITER_PAIRS and not scripted:
+            stack.append((len(out), ch))
+            out.append(item)
+            continue
+        if ch is not None and stack and (DELIMITER_PAIRS.get(stack[-1][1]) == ch
+                                         or (ch in "|‖" and stack[-1][1] == ch)
+                                         or (ch in ")]" and stack[-1][1] in "([")):  # also [0, T)
+            start, open_ch = stack.pop()
+            body = out[start + 1 :]
+            if (not scripted and ch not in "|‖" and DELIMITER_PAIRS.get(open_ch) == ch
+                    and not any(isinstance(b, MNary) for b in body)):
+                # Plain brackets stay characters, as in LaTeX (they do not stretch); a group is
+                # needed only for a script on the closing bracket or around a sum/integral.
+                out.append(item)
+                continue
+            delim = MDelim(open_ch, ch, body)
+            del out[start:]
+            out.append(MScript(delim, item.sub, item.sup) if scripted else delim)
+            continue
+        if ch in ("|", "‖") and not scripted:
+            stack.append((len(out), ch))
+            out.append(item)
+            continue
+        out.append(item)
+    return [MRun("∣", r.style, r.cls) if isinstance(r, MRun) and r.text == "|" else r for r in out]
+
+
+ZWSP = "\u200b"
+
+
+def _blank(item) -> bool:
+    """Nothing visible: an empty group or white space."""
+    if isinstance(item, MGroup):
+        return all(_blank(i) for i in item.items)
+    if isinstance(item, (MRun, MSpace)):
+        return not item.text.strip() or all(c in "\u2009\u205f\u2002\u2003\u2004\u2005\u00a0 " for c in item.text)
+    return False
+
+
+# Function names LibreOffice's formula language knows; other upright words are written as
+# normal text (LibreOffice would italicize them or read them as operators).
+LIBREOFFICE_FUNCTIONS = {"sin", "cos", "tan", "cot", "sinh", "cosh", "tanh", "coth", "arcsin", "arccos",
+                         "arctan", "arccot", "ln", "log", "exp"}
+
+
+def _is_word(item) -> bool:
+    """Upright words and letters (\\mathrm{sim}, \\mathrm{Cu}, \\mathrm{d}, Δ, 𝔼, \\det, \\max ...).
+
+    LibreOffice ignores the upright style of single letters and reads words such as "sim" as
+    operators, so these are written as normal text."""
+    return (isinstance(item, MRun) and item.style == "p" and (item.text.isalpha() or item.cls == "op"
+                                                               and _letters(item.text))
+            and not (item.cls == "op" and item.text in LIBREOFFICE_FUNCTIONS))
+
+
+# Functions whose subscript goes below the name in displayed formulas (\lim_{x \to 0}).
+LIMIT_FUNCTIONS = {"lim", "liminf", "limsup", "max", "min", "sup", "inf", "det", "gcd", "Pr", "argmax", "argmin"}
+
+
+def _unwrap(node):
+    while isinstance(node, MGroup) and len(node.items) == 1:
+        node = node.items[0]
+    return node
+
+
+def _letters(text: str) -> bool:
+    """Whether TEXT is a word, possibly with spaces (arg max)."""
+    return text.replace(" ", "").replace("\u2009", "").replace("\u205f", "").isalpha()
+
+
+def _function_name(item) -> bool:
+    base = _unwrap(item.base) if isinstance(item, MScript) else item
+    return isinstance(base, MRun) and base.cls == "op" and _letters(base.text)
+
+
+def _limits_below(item) -> bool:
+    base = _unwrap(item.base)
+    return base.text in LIMIT_FUNCTIONS or base.limits
+
+
+def _function_argument(item) -> bool:
+    if isinstance(item, MRun):
+        return item.cls == "ord" and bool(item.text.strip()) and item.text != ZWSP
+    return isinstance(item, (MScript, MAcc, MFrac, MDelim, MRad)) and not _function_name(item)
+
+
+def _function_name_xml(item, display: bool) -> str:
+    base = _unwrap(item.base) if isinstance(item, MScript) else item
+    name = _run_xml(base.text, "nor" if _is_word(base) else base.style)
+    if not isinstance(item, MScript):
+        return name
+    if display and _limits_below(item) and item.sub is not None and item.sup is None:
+        return f"<m:limLow><m:e>{name}</m:e>{_e(item.sub, False, 'm:lim')}</m:limLow>"
+    return _node_xml(item, display)
+
+
 def _seq_xml(items: list, display: bool) -> str:
+    items = group_delimiters(items)
+    # A relation at the start or an operator at the end of a (sub)formula is fine in Word but
+    # breaks LibreOffice's equation import; an invisible zero-width space keeps both happy.
+    # (Empty groups do not count: "k ={}& m".)
+    first = 0
+    while first < len(items) and _blank(items[first]) and isinstance(items[first], MGroup):
+        first += 1
+    if first < len(items) and isinstance(items[first], MRun) and items[first].cls == "rel":
+        items = items[:first] + [MRun(ZWSP, "p")] + items[first:]
+    last = len(items) - 1
+    while last >= 0 and _blank(items[last]) and isinstance(items[last], MGroup):
+        last -= 1
+    if last >= 0 and isinstance(items[last], MRun) and (
+            (items[last].cls in ("bin", "rel") and last > 0) or items[last].text[-1:] in "+−-=±∓"):
+        # (also a lone charge sign in a superscript: Cu²⁺, C₂⁺)
+        items = items[:last + 1] + [MRun(ZWSP, "p")] + items[last + 1:]
     parts: list[str] = []
     pending_text = ""
     pending_style = None
@@ -587,7 +919,33 @@ def _seq_xml(items: list, display: bool) -> str:
             parts.append(_run_xml(pending_text, pending_style))
         pending_text, pending_style = "", None
 
-    for item in items:
+    index = 0
+    while index < len(items):
+        item = items[index]
+        index += 1
+        if _function_name(item) and (index < len(items) and _function_argument(items[index])
+                                     or display and isinstance(item, MScript) and _limits_below(item)):
+            # \cos\theta, \max_i x_i: a function object, which Word and LibreOffice space properly
+            # (and whose subscript goes below \lim, \max, ... in displayed formulas).
+            flush()
+            name = _function_name_xml(item, display)
+            if index < len(items) and _function_argument(items[index]):
+                parts.append(f"<m:func><m:fName>{name}</m:fName>{_e([items[index]], display)}</m:func>")
+                index += 1
+            else:
+                parts.append(name)  # (an empty argument would show as a placeholder box)
+            continue
+        if _is_word(item):
+            # Written as normal text: LibreOffice would read words such as "sim" or "sum" as
+            # operators of its own formula language; Word shows the same upright text.
+            flush()
+            parts.append(_run_xml(item.text, "nor"))
+            continue
+        if isinstance(item, MRun) and item.text and item.cls == "op":
+            # Function names (ln, log, ...) stay separate runs: "Δln" would read as one identifier.
+            flush()
+            parts.append(_run_xml(item.text, item.style))
+            continue
         if isinstance(item, MRun) and item.text:
             if pending_style == item.style:
                 pending_text += item.text
@@ -637,6 +995,22 @@ def _node_xml(node, display: bool) -> str:
         if node.degree:
             return f"<m:rad>{_e(node.degree, False, 'm:deg')}{_e(node.body, display)}</m:rad>"
         return f'<m:rad><m:radPr><m:degHide m:val="1"/></m:radPr><m:deg/>{_e(node.body, display)}</m:rad>'
+    if isinstance(node, MNary) and node.chr not in NATIVE_NARY:
+        under = node.limits if node.limits is not None else display
+        op = _run_xml(node.chr, "p")
+        if under:
+            if node.sub is not None:
+                op = f"<m:limLow><m:e>{op}</m:e>{_e(node.sub, False, 'm:lim')}</m:limLow>"
+            if node.sup is not None:
+                op = f"<m:limUpp><m:e>{op}</m:e>{_e(node.sup, False, 'm:lim')}</m:limUpp>"
+        elif node.sub is not None and node.sup is not None:
+            op = f"<m:sSubSup><m:e>{op}</m:e>{_e(node.sub, False, 'm:sub')}{_e(node.sup, False, 'm:sup')}</m:sSubSup>"
+        elif node.sub is not None:
+            op = f"<m:sSub><m:e>{op}</m:e>{_e(node.sub, False, 'm:sub')}</m:sSub>"
+        elif node.sup is not None:
+            op = f"<m:sSup><m:e>{op}</m:e>{_e(node.sup, False, 'm:sup')}</m:sSup>"
+        body = [b for b in node.body if not (isinstance(b, MRun) and b.text == "\u2062")]
+        return op + _seq_xml(body, display)
     if isinstance(node, MNary):
         under = node.limits if node.limits is not None else (display and not node.integral)
         props = [f'<m:chr m:val="{escape(node.chr)}"/>', f'<m:limLoc m:val="{"undOvr" if under else "subSup"}"/>']
@@ -668,6 +1042,9 @@ def _node_xml(node, display: bool) -> str:
         rows_xml = []
         for row in node.rows:
             cells = list(row) + [[]] * (ncols - len(row))
+            # (LibreOffice cannot import an empty cell - the continuation line "&= c" of a split,
+            # an empty entry of a matrix or cases - and loses the whole row or formula.)
+            cells = [cell if not all(_blank(item) for item in cell) else [MRun(ZWSP, "p")] for cell in cells]
             rows_xml.append("<m:mr>" + "".join(_e(cell, display) for cell in cells) + "</m:mr>")
         return f"<m:m><m:mPr><m:mcs>{mcs}</m:mcs></m:mPr>{''.join(rows_xml)}</m:m>"
     return ""
@@ -785,7 +1162,7 @@ def _flatten_text(items: list, runs: list[MathTextRun], vert: str | None, spaced
                     runs.append(MathTextRun(" ", vert=vert))
             elif last_cls == "punct":
                 runs.append(MathTextRun(" ", vert=vert))
-            elif cls == "op" and last_cls in ("ord", "close"):
+            elif cls == "op" and last_cls in ("ord", "close") or last_cls == "op" and cls in ("ord", "op", "inner"):
                 runs.append(MathTextRun(" ", vert=vert))
         _emit_text(item, runs, vert)
         last_cls = cls
@@ -795,10 +1172,12 @@ def _emit_text(item, runs: list[MathTextRun], vert: str | None) -> None:
     if isinstance(item, MRun):
         style = item.style
         text = item.text
-        italic = style == "i" or style == "bi" or (style == "auto" and _is_italic_letter(text))
+        italic = style in ("i", "bi", "nori") or (style == "auto" and _is_italic_letter(text))
         if text == "∣":
             text = "|"  # \mid: a plain vertical bar reads better in ordinary text
-        runs.append(MathTextRun(text, italic=italic, bold=style in ("b", "bi"), vert=vert))
+        elif text == "∗":
+            text = "*"  # text fonts often lack U+2217 (significance stars: $^{***}$)
+        runs.append(MathTextRun(text, italic=italic, bold=style in ("b", "bi", "norb"), vert=vert))
     elif isinstance(item, MGroup):
         _flatten_text(item.items, runs, vert, spaced=vert is None)
     elif isinstance(item, MScript):

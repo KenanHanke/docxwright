@@ -64,7 +64,13 @@ def _strip_line_comment(line: str) -> str:
     return line
 
 
+_CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0b\x0e-\x1f\x7f]")
+
+
 def tokenize(text: str, at_letter: bool = False) -> list[Tok]:
+    # (A form feed - the ^L page separator of Emacs - is a paragraph break in LaTeX; other control
+    # characters print nothing, and Word files cannot hold them.)
+    text = _CONTROL_CHARACTERS.sub("", text.replace("\x0c", "\n\n"))
     text = strip_comments(text)
     # A line ending in a comment joins with the next line (TeX ignores both the
     # newline and the next line's indentation).
@@ -124,7 +130,8 @@ def tokenize(text: str, at_letter: bool = False) -> list[Tok]:
                     else:
                         i = j
                 continue
-            tokens.append(Tok("cs", text[i + 1]))
+            # (A backslash at the end of a line is a control space, as in TeX.)
+            tokens.append(Tok("cs", " " if text[i + 1] in "\n\t" else text[i + 1]))
             i += 2
             continue
         if ch == "{":
@@ -325,6 +332,100 @@ class Macro:
     nargs: int
     default: list[Tok] | None
     body: list[Tok]
+    spec: tuple = ()  # xparse argument specification (\NewDocumentCommand): (("m", None), ("O", default), ...)
+    alias: str | None = None  # \let\old\section: the built-in command it stands for
+
+
+DEFINING_COMMANDS = {"newcommand", "renewcommand", "providecommand", "DeclareRobustCommand", "def",
+                     "DeclareMathOperator", "NewDocumentCommand", "RenewDocumentCommand",
+                     "ProvideDocumentCommand", "DeclareDocumentCommand"}
+XPARSE_COMMANDS = {"NewDocumentCommand", "RenewDocumentCommand", "ProvideDocumentCommand", "DeclareDocumentCommand",
+                   "NewExpandableDocumentCommand", "RenewExpandableDocumentCommand",
+                   "ProvideExpandableDocumentCommand", "DeclareExpandableDocumentCommand"}
+XPARSE_ENVIRONMENTS = {"NewDocumentEnvironment", "RenewDocumentEnvironment", "ProvideDocumentEnvironment",
+                       "DeclareDocumentEnvironment"}
+# xparse: the value of an optional argument that was not given (\IfNoValueTF tests for it).
+NO_VALUE = Tok("cs", "docxwrightNoValue")
+
+
+def parse_xparse_spec(tokens: list[Tok]) -> tuple | None:
+    """An xparse argument specification ("m O{x} s") as (kind, extra) pairs; None if unsupported."""
+    stream = TokenStream(list(tokens))
+    spec: list[tuple] = []
+    while not stream.at_end():
+        tok = stream.next()
+        if tok.kind in ("space", "par") or tok.kind == "char" and tok.value in "+!":
+            continue
+        if tok.kind != "char" or len(tok.value) != 1:
+            return None
+        kind = tok.value
+        if kind in "mvobsgl":
+            spec.append((kind if kind != "v" else "m", None))
+        elif kind in "OG":
+            spec.append((kind, stream.read_arg()))
+        elif kind == "t":
+            spec.append((kind, stream.next()))
+        elif kind in "dr":
+            spec.append((kind, (stream.next(), stream.next())))
+        elif kind in "DR":
+            spec.append((kind, (stream.next(), stream.next(), stream.read_arg())))
+        elif kind == "e":
+            stream.read_arg()  # (embellishments: not supported, no argument)
+        elif kind == "E":
+            stream.read_arg()
+            stream.read_arg()
+        else:
+            return None
+    return tuple(spec)
+
+
+def read_xparse_args(stream: TokenStream, spec: tuple) -> list[list[Tok]]:
+    args: list[list[Tok]] = []
+    for kind, extra in spec:
+        if kind == "m":
+            args.append(stream.read_arg())
+        elif kind in ("o", "O"):
+            value = stream.read_optional()
+            args.append(value if value is not None else list(extra) if kind == "O" else [NO_VALUE])
+        elif kind in ("g", "G"):
+            save = stream.pos
+            stream.skip_space()
+            if stream.peek() is not None and stream.peek().kind == "bgroup":
+                args.append(stream.read_arg())
+            else:
+                stream.pos = save
+                args.append(list(extra) if kind == "G" else [NO_VALUE])
+        elif kind in ("s", "t"):
+            mark = Tok("char", "*") if kind == "s" else extra
+            save = stream.pos
+            stream.skip_space()
+            found = mark is not None and stream.peek() == mark
+            if found:
+                stream.next()
+            else:
+                stream.pos = save
+            args.append([Tok("cs", "BooleanTrue" if found else "BooleanFalse")])
+        elif kind in ("d", "D", "r", "R"):
+            opening, closing = extra[0], extra[1]
+            save = stream.pos
+            stream.skip_space()
+            if opening is not None and stream.peek() == opening:
+                stream.next()
+                value: list[Tok] = []
+                depth = 0
+                while not stream.at_end():
+                    tok = stream.next()
+                    depth += 1 if tok.kind == "bgroup" else -1 if tok.kind == "egroup" else 0
+                    if tok == closing and depth == 0:
+                        break
+                    value.append(tok)
+                args.append(value)
+            else:
+                stream.pos = save
+                args.append(list(extra[2]) if kind in ("D", "R") else [NO_VALUE])
+        else:  # (b, l: nothing to read here)
+            args.append([])
+    return args
 
 
 def parse_macro_definitions(tokens: list[Tok]) -> dict[str, Macro]:
@@ -333,6 +434,11 @@ def parse_macro_definitions(tokens: list[Tok]) -> dict[str, Macro]:
     stream = TokenStream(list(tokens))
     while not stream.at_end():
         tok = stream.next()
+        if tok.kind == "cs" and tok.value in macros and any(
+                t.kind == "cs" and t.value in DEFINING_COMMANDS for t in macros[tok.value].body):
+            # A macro that defines macros (\DefSet{\Reals}{R}): expand it and read the result.
+            stream.push(expand_macro(stream, macros[tok.value]))
+            continue
         if tok.is_cs("newcommand", "renewcommand", "providecommand", "DeclareRobustCommand"):
             stream.read_star()
             name_tokens = stream.read_arg()
@@ -347,6 +453,22 @@ def parse_macro_definitions(tokens: list[Tok]) -> dict[str, Macro]:
                 continue
             if _is_simple_macro(body):
                 macros[name_tokens[0].value] = Macro(nargs, default, body)
+        elif tok.kind == "cs" and tok.value in XPARSE_COMMANDS:
+            macro = read_xparse_definition(stream)
+            if macro is not None:
+                macros[macro[0]] = macro[1]
+        elif tok.is_cs("DeclareMathOperator"):
+            # \DeclareMathOperator{\tr}{tr}: an upright operator name (starred: limits below).
+            star = stream.read_star()
+            name_tokens = stream.read_arg()
+            body = stream.read_arg()
+            if len(name_tokens) == 1 and name_tokens[0].kind == "cs":
+                command = [Tok("cs", "operatorname")] + ([Tok("char", "*")] if star else [])
+                macros[name_tokens[0].value] = Macro(0, None, command + [BGROUP, *body, EGROUP])
+        elif tok.is_cs("let", "NewCommandCopy", "RenewCommandCopy", "DeclareCommandCopy"):
+            if tok.value != "let":
+                stream.push([t for t in stream.read_arg() + stream.read_arg() if t.kind == "cs"])
+            let_macro(macros, stream)
         elif tok.is_cs("def"):
             name = stream.next()
             if name is None or name.kind != "cs":
@@ -363,6 +485,32 @@ def parse_macro_definitions(tokens: list[Tok]) -> dict[str, Macro]:
     return macros
 
 
+def let_macro(macros: dict, stream: TokenStream) -> None:
+    """\\let\\new\\old (or \\let\\new=\\old): a copy of the macro, or an alias of the built-in command."""
+    target = stream.next()
+    stream.skip_space()
+    if stream.peek() == Tok("char", "="):
+        stream.next()
+        stream.skip_space()
+    source = stream.next()
+    if target is None or target.kind != "cs" or source is None or source.kind != "cs" or target == source:
+        return
+    if source.value in macros:
+        macros[target.value] = macros[source.value]
+    else:
+        macros[target.value] = Macro(0, None, [source], alias=source.value)
+
+
+def read_xparse_definition(stream: TokenStream) -> tuple | None:
+    """\\NewDocumentCommand{\\name}{spec}{body}: (name, Macro), or None if it cannot be expanded."""
+    name_tokens = stream.read_arg()
+    spec = parse_xparse_spec(stream.read_arg())
+    body = stream.read_arg()
+    if len(name_tokens) != 1 or name_tokens[0].kind != "cs" or spec is None or not _is_simple_macro(body):
+        return None
+    return name_tokens[0].value, Macro(len(spec), None, body, spec)
+
+
 def _is_simple_macro(body: list[Tok]) -> bool:
     """Macros relying on TeX programming (loops, internal ``@`` macros) are not expanded."""
     for tok in body:
@@ -372,15 +520,24 @@ def _is_simple_macro(body: list[Tok]) -> bool:
 
 
 def expand_macro(stream: TokenStream, macro: Macro) -> list[Tok]:
+    if macro.alias is not None:
+        return [Tok("cs", macro.alias)]
     args: list[list[Tok]] = []
-    if macro.nargs:
+    if macro.spec:
+        args = read_xparse_args(stream, macro.spec)
+    elif macro.nargs:
         if macro.default is not None:
             opt = stream.read_optional()
             args.append(opt if opt is not None else list(macro.default))
         while len(args) < macro.nargs:
             args.append(stream.read_arg())
+    return substitute(macro.body, args)
+
+
+def substitute(body: list[Tok], args: list[list[Tok]]) -> list[Tok]:
+    """A macro body with its parameters #1, #2, ... replaced by the arguments."""
     out: list[Tok] = []
-    for tok in macro.body:
+    for tok in body:
         if tok.kind == "param":
             idx = int(tok.value) - 1
             if 0 <= idx < len(args):
@@ -388,6 +545,199 @@ def expand_macro(stream: TokenStream, macro: Macro) -> list[Tok]:
         else:
             out.append(tok)
     return out
+
+
+TEX_IFS = {"if", "ifx", "ifnum", "ifdim", "ifodd", "ifvmode", "ifhmode", "ifmmode", "ifinner", "ifcase", "iftrue",
+           "iffalse", "ifcat", "ifdefined", "ifcsname", "ifeof", "ifvoid", "ifhbox", "ifvbox", "ifincsname",
+           "iffontchar", "ifpdf", "ifxetex", "ifluatex", "ifPDFTeX", "ifXeTeX", "ifLuaTeX"}
+
+
+def resolve_conditionals(tokens: list[Tok]) -> tuple[list[Tok], dict[str, bool]]:
+    """The preamble with its \\iffalse ... \\fi and \\newif switches (\\ifanonymous ... \\else ... \\fi,
+    with \\anonymoustrue set before) resolved, as TeX reads it; other conditionals (\\ifx, \\ifpdf)
+    are kept. Also returns the switches and their final values."""
+    booleans: dict[str, bool] = {}
+    out: list[Tok] = []
+    stack: list[bool | None] = []  # per open conditional: the branch is kept (None: kept as it is)
+    stream = TokenStream(list(tokens))
+    defined: dict[str, list[Tok] | None] = {}  # macros defined so far (\ifdefined, \if0\blind)
+
+    def skipping() -> bool:
+        return any(state is False for state in stack)
+
+    while not stream.at_end():
+        tok = stream.next()
+        name = tok.value if tok.kind == "cs" else None
+        if name and not skipping() and name in SWITCH_COMMANDS:
+            # (etoolbox toggles, ifthen booleans: \iftoggle{anon}{..}{..}, \ifthenelse{\boolean{anon}}{..}{..})
+            chosen = switch_command(name, stream, booleans, defined)
+            if chosen is not None:
+                stream.push(chosen)
+            continue
+        if name in ("def", "gdef", "edef", "xdef") and not skipping():
+            target = stream.peek()
+            if target is not None and target.kind == "cs":
+                body_start = stream.pos + 1
+                while body_start < len(stream.tokens) and stream.tokens[body_start].kind != "bgroup":
+                    body_start += 1
+                probe = TokenStream(stream.tokens[body_start:body_start + 200])
+                defined[target.value] = probe.read_arg() if body_start == stream.pos + 1 else None
+        elif name in ("newcommand", "renewcommand", "providecommand", "DeclareRobustCommand", "let",
+                      "NewDocumentCommand", "DeclareDocumentCommand") and not skipping():
+            probe = TokenStream(stream.tokens[stream.pos:stream.pos + 400])
+            if name == "let":
+                target = probe.next()
+                if target is not None and target.kind == "cs":
+                    defined[target.value] = None
+            else:
+                probe.read_star()
+                target_tokens = probe.read_arg()
+                if len(target_tokens) == 1 and target_tokens[0].kind == "cs":
+                    nargs = probe.read_optional()
+                    probe.read_optional()
+                    defined[target_tokens[0].value] = probe.read_arg() if not nargs else None
+        if name in ("ifdefined", "ifx", "if") and not skipping():
+            value = compare_condition(name, stream, defined)
+            if value is not None:
+                stack.append(value)
+                continue
+        if name == "newif" and not skipping():
+            target = stream.next()
+            if target is not None and target.kind == "cs" and target.value.startswith("if"):
+                booleans.setdefault(target.value[2:], False)
+            out += [tok] + ([target] if target is not None else [])
+            continue
+        if name and name.startswith("if") and (name in ("iffalse", "iftrue") or name[2:] in booleans):
+            stack.append(name == "iftrue" or name not in ("iffalse",) and booleans.get(name[2:], False))
+            continue
+        if name and (name in TEX_IFS or name.startswith("if") and name[2:] in booleans):
+            stack.append(None)
+        elif name == "else" and stack and stack[-1] is not None:
+            stack[-1] = not stack[-1] if not any(state is False for state in stack[:-1]) else False
+            continue
+        elif name == "fi" and stack:
+            if stack.pop() is not None:
+                continue
+        elif name and not skipping() and (name.endswith("true") or name.endswith("false")):
+            base = name[:-4] if name.endswith("true") else name[:-5]
+            if base in booleans:
+                booleans[base] = name.endswith("true")
+        if not skipping():
+            out.append(tok)
+    return out, booleans
+
+
+SWITCH_COMMANDS = {"newtoggle", "providetoggle", "toggletrue", "togglefalse", "settoggle", "iftoggle", "nottoggle",
+                   "newboolean", "provideboolean", "setboolean", "ifthenelse"}
+# Commands a document may test with \ifdefined that are defined by LaTeX or common packages.
+KNOWN_COMMANDS = {"chapter", "part", "section", "subsection", "includegraphics", "textcolor", "url", "href", "cite",
+                  "citep", "citet", "SI", "num", "mathbb", "bm", "boldsymbol", "maketitle", "title", "author",
+                  "date", "caption", "label", "ref", "emph", "textbf", "footnote", "item", "relax",
+                  "pdfoutput", "pdftexversion"}  # (pdflatex, as docxwright renders figures)
+
+
+def switch_command(name: str, stream: TokenStream, switches: dict, defined: dict | None = None) -> list[Tok] | None:
+    """etoolbox's toggles and ifthen's booleans: sets them, or returns the branch to read."""
+    def flag() -> str:
+        return group_text(stream.read_arg()).strip()
+
+    if name in ("newtoggle", "providetoggle"):
+        switches.setdefault("toggle:" + flag(), False)
+    elif name in ("toggletrue", "togglefalse"):
+        switches["toggle:" + flag()] = name == "toggletrue"
+    elif name == "settoggle":
+        key = flag()
+        switches["toggle:" + key] = flag() == "true"
+    elif name in ("iftoggle", "nottoggle"):
+        value = switches.get("toggle:" + flag(), False)
+        true, false = stream.read_arg(), stream.read_arg()
+        return true if value == (name == "iftoggle") else false
+    elif name in ("newboolean", "provideboolean"):
+        switches.setdefault("boolean:" + flag(), False)
+    elif name == "setboolean":
+        key = flag()
+        switches["boolean:" + key] = flag().lower() == "true"
+    elif name == "ifthenelse":
+        condition = stream.read_arg()
+        true, false = stream.read_arg(), stream.read_arg()
+        value = ifthen_condition(condition, switches, defined or {})
+        return (true if value else false) if value is not None else true + false
+    return None
+
+
+def ifthen_condition(tokens: list[Tok], switches: dict, defined: dict) -> bool | None:
+    """The value of an \\ifthenelse condition (\\boolean{x}, \\equal{a}{b}, \\isundefined{\\x}, \\not)."""
+    stream = TokenStream(list(tokens))
+    stream.skip_space()
+    tok = stream.next()
+    negate = False
+    while tok is not None and tok.kind == "cs" and tok.value in ("not", "NOT"):
+        negate = not negate
+        stream.skip_space()
+        tok = stream.next()
+    if tok is None or tok.kind != "cs":
+        return None
+    if tok.value == "boolean":
+        value = switches.get("boolean:" + group_text(stream.read_arg()).strip(), False)
+    elif tok.value == "equal":
+        value = detokenize(stream.read_arg()).strip() == detokenize(stream.read_arg()).strip()
+    elif tok.value == "isundefined":
+        target = stream.read_arg()
+        value = not (target and target[0].kind == "cs" and target[0].value in defined)
+    else:
+        return None
+    return value != negate
+
+
+def compare_condition(name: str, stream: TokenStream, defined: dict) -> bool | None:
+    """\\ifdefined\\x, \\ifx\\x\\undefined and \\if0\\blind (a macro holding 0 or 1, as in journal
+    templates): their value, or None (the conditional is kept as it is)."""
+    save = stream.pos
+    first = stream.next()
+    if name == "ifdefined":
+        if first is not None and first.kind == "cs":
+            return first.value in defined or first.value in KNOWN_COMMANDS
+    elif name == "ifx":
+        second = stream.next()
+        if first is not None and second is not None and first.kind == second.kind == "cs" \
+                and second.value in ("undefined", "relax"):
+            return first.value not in defined and first.value not in KNOWN_COMMANDS
+    elif name == "if":
+        second = stream.next()
+        values = []
+        for item in (first, second):
+            if item is not None and item.kind == "cs" and defined.get(item.value):
+                values.append(detokenize(defined[item.value]).strip()[:1])
+            elif item is not None and item.kind == "char":
+                values.append(item.value)
+        if len(values) == 2:
+            return values[0] == values[1]
+    stream.pos = save
+    return None
+
+
+def remove_comment_environments(text: str, preamble: str | None = None) -> str:
+    """TEXT without the comment environments (comment package: \\begin{comment}...\\end{comment}, and
+    those the preamble declares with \\excludecomment{name} or versions' \\excludeversion{name})."""
+    source = preamble if preamble is not None else text
+    names = {"comment"}
+    for match in re.finditer(r"\\(?:excludecomment|excludeversion)\s*\{\s*([A-Za-z@*]+)\s*\}", source):
+        names.add(match.group(1))
+    # (A document that defines a visible environment of that name - \\newenvironment{comment}{...} -
+    # prints it.)
+    for match in re.finditer(r"\\(?:newenvironment|renewenvironment|NewDocumentEnvironment|RenewDocumentEnvironment|"
+                             r"DeclareDocumentEnvironment)\s*\*?\s*\{\s*([A-Za-z@*]+)\s*\}", source):
+        names.discard(match.group(1))
+    if names:
+        pattern = "|".join(re.escape(name) for name in sorted(names))
+        # (The comment package skips the lines from \\begin{comment} to \\end{comment}, the rest of
+        # that line and its end included.)
+        text = re.sub(r"\\begin\s*\{(" + pattern + r")\}.*?\\end\s*\{\1\}[^\n]*\n?", "", text, flags=re.S)
+    # (\\includecomment{name}: the text of the environment, as if it were not there.)
+    for match in re.finditer(r"\\(?:includecomment|includeversion)\s*\{\s*([A-Za-z@*]+)\s*\}", source):
+        name = re.escape(match.group(1))
+        text = re.sub(r"\\(?:begin|end)\s*\{" + name + r"\}[ \t]*\n?", "", text)
+    return text
 
 
 def resolve_tex_path(target: str, *bases: Path) -> Path | None:
@@ -426,7 +776,17 @@ def flatten_tex(path: Path, root_dir: Path | None = None, seen: set[Path] | None
             body = _SUBFILE_BODY.search(content)
             content = body.group(1) if body else content
         seen.discard(found.resolve())
-        return "\n" + content + "\n"
+        if command != "input":
+            return "\n" + content + "\n"
+        # \input is read in place, inside the paragraph (an \input{number.tex} in mid-sentence): the
+        # end of the file's last line is a space, a blank line at its end a paragraph break.
+        body = content.strip(" \t\n")
+        if not body:
+            return ""
+        lead = "\n\n" if content[:len(content) - len(content.lstrip(" \t\n"))].count("\n") >= 2 else (
+            " " if re.search(r"\\[A-Za-z@]+$", match.string[:match.start()]) else "")
+        trail = "\n\n" if content[len(content.rstrip(" \t\n")):].count("\n") >= 2 else " "
+        return lead + body + trail
 
     # Figure inputs are kept verbatim so that the figure renderer can hand them to LaTeX.
     return re.sub(r"\\(subfile|include)\s*\{([^{}]+)\}", replace, _inline_inputs(text, root_dir, path, seen, replace))
